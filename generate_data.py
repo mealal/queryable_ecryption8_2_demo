@@ -531,8 +531,12 @@ def main():
     print(f"  • AlloyDB: Complete customer data")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-    print("  1. Start API: cd api && python app.py")
-    print("  2. Run tests: python run_tests.py")
+    print("  1. Run tests: python run_tests.py")
+    print("  2. Test API:  http://localhost:8000/docs (API runs in Docker)")
+    print()
+    print(f"{Colors.BOLD}Mode Switching:{Colors.ENDC}")
+    print("  • Hybrid mode:        Default (MongoDB search → AlloyDB fetch)")
+    print("  • MongoDB-only mode:  Add ?mode=mongodb_only to any search endpoint")
 
 if __name__ == "__main__":
     main()

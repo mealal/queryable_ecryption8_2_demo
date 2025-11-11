@@ -451,9 +451,9 @@ def deploy_all():
     print("  • API Docs: http://localhost:8000/docs")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-    print("  1. Generate test data:  python generate_data.py --reset")
+    print("  1. Generate test data:  python generate_data.py --reset --count 10000")
     print("  2. Run tests:           python run_tests.py")
-    print("  3. View test report:    test_report.html")
+    print("  3. View test report:    Open test_report.html in browser (generated after tests)")
 
 def main():
     """Main entry point"""
