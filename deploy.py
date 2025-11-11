@@ -150,28 +150,66 @@ def init_replica_set():
 
     print_info("Checking replica set status...")
 
-    # Check if already initialized
+    # Check if already initialized - rs.status() returns ok:1 when operational
     rs_status = run_command(
-        "docker exec poc_mongodb mongosh --eval 'rs.status()' --quiet",
+        "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
         check=False,
         capture_output=True
     )
 
-    if rs_status and 'ok: 1' in rs_status:
-        print_success("Replica set already initialized")
+    if rs_status and '1' in rs_status:
+        print_success("Replica set already initialized and operational")
         return True
+
+    # Try to get replica set config - if it exists, we just need to wait or reconfigure
+    rs_conf = run_command(
+        "docker exec poc_mongodb mongosh --eval 'rs.conf()' --quiet",
+        check=False,
+        capture_output=True
+    )
+
+    if rs_conf and '_id' in rs_conf:
+        print_info("Replica set config exists but not ready, reconfiguring with correct hostname...")
+
+        # Reconfigure with correct hostname
+        reconfig_result = run_command(
+            'docker exec poc_mongodb mongosh --eval "var cfg = rs.conf(); cfg.members[0].host = \'poc_mongodb:27017\'; rs.reconfig(cfg, {force: true});" --quiet',
+            check=False,
+            capture_output=True
+        )
+
+        if reconfig_result:
+            print_success("Replica set reconfigured")
+            time.sleep(10)  # Wait for replica set to stabilize after reconfig
+            return True
 
     print_info("Initializing replica set...")
 
     result = run_command(
-        'docker exec poc_mongodb mongosh --eval "rs.initiate()" --quiet',
+        'docker exec poc_mongodb mongosh --eval "rs.initiate({_id: \'rs0\', members: [{_id: 0, host: \'poc_mongodb:27017\'}]})" --quiet',
         check=False,
         capture_output=True
     )
 
-    if result:
+    # Check for "already initialized" error - this is actually success
+    if result and ('ok: 1' in result or 'already initialized' in result):
         print_success("Replica set initialized")
-        time.sleep(5)  # Wait for replica set to stabilize
+        time.sleep(10)  # Wait for replica set to stabilize
+
+        # Verify it's operational
+        for i in range(10):
+            rs_check = run_command(
+                "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
+                check=False,
+                capture_output=True
+            )
+            if rs_check and '1' in rs_check:
+                print_success("Replica set is operational")
+                return True
+            time.sleep(2)
+            print(f"  Waiting for replica set... ({i+1}/10)")
+
+        print_warning("Replica set initialized but taking longer to become operational")
         return True
     else:
         print_error("Failed to initialize replica set")
