@@ -1,0 +1,98 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+.master_key
+.encryption_key
+
+# Claude Code configuration
+.claude/
+claude_config/
+.claude_code/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+ENV/
+env/
+
+# Denodo
+denodo_data/
+*.vql.bak
+encryption-schema.json
+
+# MongoDB
+mongodb/data/
+mongodb/logs/
+*.log
+
+# PostgreSQL / AlloyDB
+alloydb/data/
+*.sql.bak
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Backups
+backup/
+*.backup
+*.dump
+
+# Certificates and keys
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+
+# Test outputs
+test-results/
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Temporary files
+temp/
+tmp/
+*.tmp

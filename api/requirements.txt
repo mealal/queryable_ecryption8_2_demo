@@ -1,0 +1,19 @@
+# POC Integration API - Python Dependencies
+
+# FastAPI and server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
+
+# MongoDB with encryption
+# PyMongo 4.15+ required for prefix/suffix/substring preview query types
+# pymongocrypt 1.16+ required for text query preview features
+pymongo>=4.15.0
+pymongocrypt>=1.16.0
+
+# PostgreSQL
+psycopg2-binary>=2.9.10
+
+# Utilities
+python-dotenv>=1.0.0
+python-multipart>=0.0.6

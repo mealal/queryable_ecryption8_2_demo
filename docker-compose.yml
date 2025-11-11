@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  # MongoDB 8.2 with Queryable Encryption Support
+  mongodb:
+    image: mongodb/mongodb-enterprise-server:8.2-ubuntu2204
+    container_name: poc_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - poc_network
+    command: >
+      mongod --bind_ip_all --replSet rs0
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # AlloyDB (using PostgreSQL 15 as local equivalent)
+  alloydb:
+    image: postgres:15-alpine
+    container_name: poc_alloydb
+    environment:
+      POSTGRES_DB: alloydb_poc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - alloydb_data:/var/lib/postgresql/data
+      - ./alloydb/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    networks:
+      - poc_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Python environment for setup scripts
+  python_setup:
+    image: python:3.11-slim
+    container_name: poc_setup
+    working_dir: /app
+    volumes:
+      - ./mongodb:/app/mongodb
+      - ./scripts:/app/scripts
+    environment:
+      MONGODB_URI: mongodb://admin:admin_password@mongodb:27017
+      ALLOYDB_URI: postgresql://postgres:postgres_password@alloydb:5432/alloydb_poc
+    networks:
+      - poc_network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      alloydb:
+        condition: service_healthy
+    command: tail -f /dev/null
+
+  # Integration API
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: poc_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api:/app/api
+      - ./.encryption_key:/app/.encryption_key:ro
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017
+      ALLOYDB_URI: postgresql://postgres:postgres_password@alloydb:5432/alloydb_poc
+      LOCAL_MASTER_KEY_FILE: /app/.encryption_key
+    networks:
+      - poc_network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      alloydb:
+        condition: service_healthy
+    command: python api/app.py
+
+  # Denodo Platform (requires license - placeholder for documentation)
+  # denodo:
+  #   image: denodo/denodo-platform:9.0
+  #   container_name: poc_denodo
+  #   environment:
+  #     DENODO_LICENSE: ${DENODO_LICENSE}
+  #   ports:
+  #     - "9090:9090"  # REST API
+  #     - "9999:9999"  # Admin Tool
+  #   volumes:
+  #     - denodo_data:/opt/denodo/data
+  #     - ./denodo/vql-scripts:/opt/denodo/scripts
+  #   networks:
+  #     - poc_network
+  #   depends_on:
+  #     - mongodb
+  #     - alloydb
+
+  # Nginx as API Gateway (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: poc_nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - poc_network
+    depends_on:
+      - mongodb
+      - alloydb
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+  alloydb_data:
+    driver: local
+  denodo_data:
+    driver: local
+
+networks:
+  poc_network:
+    driver: bridge
