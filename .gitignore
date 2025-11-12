@@ -37,11 +37,6 @@ venv/
 ENV/
 env/
 
-# Denodo
-denodo_data/
-*.vql.bak
-encryption-schema.json
-
 # MongoDB
 mongodb/data/
 mongodb/logs/

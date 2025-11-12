@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # MongoDB 8.2 with Queryable Encryption Support
   mongodb:
@@ -43,26 +41,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Python environment for setup scripts
-  python_setup:
-    image: python:3.11-slim
-    container_name: poc_setup
-    working_dir: /app
-    volumes:
-      - ./mongodb:/app/mongodb
-      - ./scripts:/app/scripts
-    environment:
-      MONGODB_URI: mongodb://admin:admin_password@mongodb:27017
-      ALLOYDB_URI: postgresql://postgres:postgres_password@alloydb:5432/alloydb_poc
-    networks:
-      - poc_network
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      alloydb:
-        condition: service_healthy
-    command: tail -f /dev/null
-
   # Integration API
   api:
     build:
@@ -87,46 +65,12 @@ services:
         condition: service_healthy
     command: python api/app.py
 
-  # Denodo Platform (requires license - placeholder for documentation)
-  # denodo:
-  #   image: denodo/denodo-platform:9.0
-  #   container_name: poc_denodo
-  #   environment:
-  #     DENODO_LICENSE: ${DENODO_LICENSE}
-  #   ports:
-  #     - "9090:9090"  # REST API
-  #     - "9999:9999"  # Admin Tool
-  #   volumes:
-  #     - denodo_data:/opt/denodo/data
-  #     - ./denodo/vql-scripts:/opt/denodo/scripts
-  #   networks:
-  #     - poc_network
-  #   depends_on:
-  #     - mongodb
-  #     - alloydb
-
-  # Nginx as API Gateway (optional)
-  nginx:
-    image: nginx:alpine
-    container_name: poc_nginx
-    ports:
-      - "8080:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    networks:
-      - poc_network
-    depends_on:
-      - mongodb
-      - alloydb
-
 volumes:
   mongodb_data:
     driver: local
   mongodb_config:
     driver: local
   alloydb_data:
-    driver: local
-  denodo_data:
     driver: local
 
 networks:

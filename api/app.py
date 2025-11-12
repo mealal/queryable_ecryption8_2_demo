@@ -18,7 +18,7 @@ from typing import Optional, List, Dict, Any
 import os
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import base64
 
 # MongoDB imports
@@ -87,17 +87,17 @@ class SearchRequest(BaseModel):
     mode: str = "id_only"  # id_only, full_data
 
 class CustomerResponse(BaseModel):
-    """Response model for customer data"""
+    """Response model for customer data - identical fields in both modes"""
     customer_id: str
     full_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
     tier: Optional[str] = None
     loyalty_points: Optional[int] = None
+    last_purchase_date: Optional[str] = None
     lifetime_value: Optional[float] = None
-    total_orders: Optional[int] = None
-    total_spent: Optional[float] = None
 
 class PerformanceMetrics(BaseModel):
     """Performance metrics for the request"""
@@ -380,27 +380,21 @@ def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
 
     try:
         with db_manager.alloydb_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Query customers with metadata and order summary
+            # Simple query - no joins for fair performance comparison
             query = """
                 SELECT
-                    c.id AS customer_id,
-                    c.full_name,
-                    c.email,
-                    c.phone,
-                    c.address,
-                    c.preferences,
-                    m.tier,
-                    m.loyalty_points,
-                    m.lifetime_value,
-                    m.last_purchase_date,
-                    COUNT(o.id) AS total_orders,
-                    COALESCE(SUM(o.total_amount), 0) AS total_spent
-                FROM customers c
-                LEFT JOIN customer_metadata m ON c.id = m.customer_id
-                LEFT JOIN orders o ON c.id = o.customer_id
-                WHERE c.id = ANY(%s::uuid[])
-                GROUP BY c.id, c.full_name, c.email, c.phone, c.address, c.preferences,
-                         m.tier, m.loyalty_points, m.lifetime_value, m.last_purchase_date
+                    id AS customer_id,
+                    full_name,
+                    email,
+                    phone,
+                    address,
+                    preferences,
+                    tier,
+                    loyalty_points,
+                    last_purchase_date,
+                    lifetime_value
+                FROM customers
+                WHERE id = ANY(%s::uuid[])
             """
 
             cursor.execute(query, (uuids,))
@@ -468,10 +462,8 @@ def fetch_and_decrypt_from_mongodb(encrypted_value: Binary, field: str) -> tuple
                 "preferences": json.loads(db_manager.client_encryption.decrypt(doc["preferences"])) if "preferences" in doc else None,
                 "tier": db_manager.client_encryption.decrypt(doc["metadata"]["tier"]) if doc.get("metadata", {}).get("tier") else None,
                 "loyalty_points": int(db_manager.client_encryption.decrypt(doc["metadata"]["loyalty_points"])) if doc.get("metadata", {}).get("loyalty_points") else 0,
-                "lifetime_value": float(db_manager.client_encryption.decrypt(doc["metadata"]["lifetime_value"])) if doc.get("metadata", {}).get("lifetime_value") else 0.0,
                 "last_purchase_date": db_manager.client_encryption.decrypt(doc["metadata"]["last_purchase_date"]) if doc.get("metadata", {}).get("last_purchase_date") else None,
-                "total_orders": None,  # Not available in MongoDB-only mode
-                "total_spent": None    # Not available in MongoDB-only mode
+                "lifetime_value": float(db_manager.client_encryption.decrypt(doc["metadata"]["lifetime_value"])) if doc.get("metadata", {}).get("lifetime_value") else 0.0
             }
             customers.append(customer)
         except Exception as e:
@@ -506,10 +498,13 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    mongodb_customers = 0
     try:
         # Check MongoDB
         db_manager.mongodb_client.admin.command('ping')
         mongodb_status = "connected"
+        # Get customer count
+        mongodb_customers = db_manager.mongodb_db.customers.count_documents({})
     except Exception as e:
         mongodb_status = f"error: {str(e)}"
 
@@ -525,8 +520,9 @@ async def health_check():
         "status": "healthy" if mongodb_status == "connected" and alloydb_status == "connected" else "degraded",
         "mongodb": mongodb_status,
         "alloydb": alloydb_status,
+        "mongodb_customers": mongodb_customers,
         "encryption_keys": len(db_manager.key_ids),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/api/v1/customers/search/email", response_model=SearchResponse)
@@ -573,7 +569,7 @@ async def search_by_email(
                         results_count=0,
                         mode="mongodb_only"
                     ),
-                    timestamp=datetime.utcnow().isoformat()
+                    timestamp=datetime.now(timezone.utc).isoformat()
                 )
 
             return SearchResponse(
@@ -587,7 +583,7 @@ async def search_by_email(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode (default): MongoDB search + AlloyDB fetch
@@ -606,7 +602,7 @@ async def search_by_email(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Step 3: Fetch from AlloyDB
@@ -626,7 +622,7 @@ async def search_by_email(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -659,7 +655,7 @@ async def search_by_name(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -677,7 +673,7 @@ async def search_by_name(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -694,7 +690,7 @@ async def search_by_name(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -727,7 +723,7 @@ async def search_by_phone(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -745,7 +741,7 @@ async def search_by_phone(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -762,7 +758,7 @@ async def search_by_phone(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -795,7 +791,7 @@ async def search_by_category(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -813,7 +809,7 @@ async def search_by_category(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -830,7 +826,7 @@ async def search_by_category(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -863,7 +859,7 @@ async def search_by_status(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -881,7 +877,7 @@ async def search_by_status(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -898,7 +894,7 @@ async def search_by_status(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -942,7 +938,7 @@ async def search_by_email_prefix(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -960,7 +956,7 @@ async def search_by_email_prefix(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -977,7 +973,7 @@ async def search_by_email_prefix(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -1017,7 +1013,7 @@ async def search_by_email_suffix(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -1035,7 +1031,7 @@ async def search_by_email_suffix(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -1052,7 +1048,7 @@ async def search_by_email_suffix(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -1096,7 +1092,7 @@ async def search_by_email_substring(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -1114,7 +1110,7 @@ async def search_by_email_substring(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -1131,7 +1127,7 @@ async def search_by_email_substring(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -1171,7 +1167,7 @@ async def search_by_name_prefix(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -1189,7 +1185,7 @@ async def search_by_name_prefix(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -1206,7 +1202,7 @@ async def search_by_name_prefix(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -1246,7 +1242,7 @@ async def search_by_name_suffix(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -1264,7 +1260,7 @@ async def search_by_name_suffix(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -1281,7 +1277,7 @@ async def search_by_name_suffix(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -1325,7 +1321,7 @@ async def search_by_name_substring(
                     results_count=len(customers),
                     mode="mongodb_only"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         # Hybrid mode
@@ -1343,7 +1339,7 @@ async def search_by_name_substring(
                     results_count=0,
                     mode="hybrid"
                 ),
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
 
         customers, alloydb_time = fetch_from_alloydb(uuids)
@@ -1360,7 +1356,7 @@ async def search_by_name_substring(
                 results_count=len(customers),
                 mode="hybrid"
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:
@@ -1395,24 +1391,21 @@ async def get_customers_by_tier(tier: str):
 
     try:
         with db_manager.alloydb_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Simple query - no joins
             query = """
                 SELECT
-                    c.id AS customer_id,
-                    c.full_name,
-                    c.email,
-                    c.phone,
-                    c.address,
-                    m.tier,
-                    m.loyalty_points,
-                    m.lifetime_value,
-                    COUNT(o.id) AS total_orders,
-                    COALESCE(SUM(o.total_amount), 0) AS total_spent
-                FROM customers c
-                LEFT JOIN customer_metadata m ON c.id = m.customer_id
-                LEFT JOIN orders o ON c.id = o.customer_id
-                WHERE m.tier = %s
-                GROUP BY c.id, c.full_name, c.email, c.phone, c.address,
-                         m.tier, m.loyalty_points, m.lifetime_value
+                    id AS customer_id,
+                    full_name,
+                    email,
+                    phone,
+                    address,
+                    preferences,
+                    tier,
+                    loyalty_points,
+                    last_purchase_date,
+                    lifetime_value
+                FROM customers
+                WHERE tier = %s
             """
 
             cursor.execute(query, (tier,))
@@ -1423,6 +1416,8 @@ async def get_customers_by_tier(tier: str):
                 customer = dict(row)
                 if customer.get('address') and isinstance(customer['address'], str):
                     customer['address'] = json.loads(customer['address'])
+                if customer.get('preferences') and isinstance(customer['preferences'], str):
+                    customer['preferences'] = json.loads(customer['preferences'])
                 customers.append(customer)
 
         total_time = (time.time() - request_start) * 1000
@@ -1436,7 +1431,7 @@ async def get_customers_by_tier(tier: str):
                 total_ms=total_time,
                 results_count=len(customers)
             ),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
 
     except Exception as e:

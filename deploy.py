@@ -73,6 +73,73 @@ def run_command(cmd, check=True, capture_output=False):
                 print(e.stderr)
         return False
 
+def check_deployment_state():
+    """Check current state of deployment to determine what actions are safe"""
+    state = {
+        'containers_exist': False,
+        'containers_running': False,
+        'mongodb_healthy': False,
+        'alloydb_healthy': False,
+        'api_running': False,
+        'replica_set_initialized': False,
+        'encryption_key_exists': False,
+        'data_exists': False
+    }
+
+    # Check if containers exist
+    result = run_command("docker ps -a --filter name=poc_ --format '{{.Names}}'", check=False, capture_output=True)
+    if result and 'poc_' in result:
+        state['containers_exist'] = True
+
+        # Check if running
+        running = run_command("docker ps --filter name=poc_ --format '{{.Names}}'", check=False, capture_output=True)
+        if running and 'poc_' in running:
+            state['containers_running'] = True
+
+            # Check MongoDB health
+            mongo_check = run_command(
+                "docker exec poc_mongodb mongosh --eval 'db.adminCommand({ping:1})' --quiet",
+                check=False, capture_output=True
+            )
+            if mongo_check and 'ok: 1' in mongo_check:
+                state['mongodb_healthy'] = True
+
+                # Check replica set
+                rs_check = run_command(
+                    "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
+                    check=False, capture_output=True
+                )
+                if rs_check and '1' in rs_check:
+                    state['replica_set_initialized'] = True
+
+            # Check AlloyDB health
+            alloydb_check = run_command(
+                'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT 1;" -t',
+                check=False, capture_output=True
+            )
+            if alloydb_check and '1' in alloydb_check:
+                state['alloydb_healthy'] = True
+
+            # Check API
+            api_check = run_command("curl -s http://localhost:8000/health", check=False, capture_output=True)
+            if api_check and 'healthy' in api_check:
+                state['api_running'] = True
+
+    # Check encryption key
+    if os.path.exists('.encryption_key') and os.path.isfile('.encryption_key'):
+        state['encryption_key_exists'] = True
+
+    # Check if data exists (check MongoDB)
+    if state['mongodb_healthy']:
+        count_check = run_command(
+            "docker exec poc_mongodb mongosh poc_database --eval 'db.customers.countDocuments()' --quiet",
+            check=False, capture_output=True
+        )
+        if count_check and count_check.strip() != '0':
+            state['data_exists'] = True
+
+    return state
+
 def check_prerequisites():
     """Check if required tools are installed"""
     print_header("Checking Prerequisites")
@@ -224,8 +291,8 @@ def create_database_users():
     mongo_user_cmd = """
 docker exec poc_mongodb mongosh --eval "
 db.getSiblingDB('admin').createUser({
-    user: 'denodo_user',
-    pwd: 'denodo_password',
+    user: 'api_user',
+    pwd: 'api_password',
     roles: [{role: 'readWrite', db: 'poc_database'}]
 })" --quiet
     """.strip()
@@ -238,11 +305,11 @@ db.getSiblingDB('admin').createUser({
 docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "
 DO \\$\\$
 BEGIN
-    IF NOT EXISTS (SELECT FROM pg_user WHERE usename = 'denodo_user') THEN
-        CREATE USER denodo_user WITH PASSWORD 'denodo_password';
-        GRANT ALL PRIVILEGES ON DATABASE alloydb_poc TO denodo_user;
-        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO denodo_user;
-        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO denodo_user;
+    IF NOT EXISTS (SELECT FROM pg_user WHERE usename = 'api_user') THEN
+        CREATE USER api_user WITH PASSWORD 'api_password';
+        GRANT ALL PRIVILEGES ON DATABASE alloydb_poc TO api_user;
+        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO api_user;
+        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO api_user;
     END IF;
 END
 \\$\\$;"
@@ -269,7 +336,7 @@ def setup_encryption():
     # Check if encryption keys exist in MongoDB
     print_info("Checking encryption key vault...")
     key_check = run_command(
-        'docker exec poc_mongodb mongosh encryption --eval "db.__keyVault.countDocuments({})" --quiet',
+        'docker exec poc_mongodb mongosh encryption --eval "db.getCollection(\'__keyVault\').countDocuments({})" --quiet',
         check=False,
         capture_output=True
     )
@@ -325,10 +392,25 @@ def stop_containers():
     """Stop Docker containers"""
     print_header("Stopping Docker Containers")
 
+    # Check current state
+    state = check_deployment_state()
+
+    if not state['containers_exist']:
+        print_info("No containers found. Nothing to stop.")
+        return True
+
+    if not state['containers_running']:
+        print_info("Containers already stopped.")
+        return True
+
     print_info("Stopping containers...")
 
-    if run_command("docker-compose stop"):
-        print_success("Containers stopped")
+    if run_command("docker-compose stop", check=False):
+        print_success("Containers stopped successfully")
+        print()
+        print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
+        print("  • To start again:  python deploy.py start")
+        print("  • To check status: python deploy.py status")
         return True
     else:
         print_error("Failed to stop containers")
@@ -338,16 +420,35 @@ def clean_deployment():
     """Clean deployment (remove all data)"""
     print_header("Cleaning Deployment")
 
-    print_warning("This will remove ALL data including Docker volumes!")
-    print_warning("Encryption keys and generated data will be preserved.")
+    # Check current state
+    state = check_deployment_state()
 
-    response = input("\nAre you sure? Type 'yes' to confirm: ")
+    if not state['containers_exist']:
+        print_info("No deployment found. Nothing to clean.")
+        return True
+
+    print_warning("This will remove ALL data including Docker volumes!")
+    print_warning("The following will be deleted:")
+    print()
+
+    if state['containers_exist']:
+        print(f"  • Docker containers: {Colors.FAIL}poc_mongodb, poc_alloydb, poc_api{Colors.ENDC}")
+    if state['data_exists']:
+        print(f"  • Database data: {Colors.FAIL}MongoDB and AlloyDB data{Colors.ENDC}")
+    if state['encryption_key_exists']:
+        print(f"  • Encryption key: {Colors.WARNING}Will be preserved{Colors.ENDC}")
+
+    print()
+    print_info("To start fresh after cleaning, run: python deploy.py start")
+    print()
+
+    response = input("Are you sure? Type 'yes' to confirm: ")
     if response.lower() != 'yes':
         print_info("Clean cancelled")
         return False
 
     print_info("Stopping and removing containers...")
-    run_command("docker-compose down -v")
+    run_command("docker-compose down -v", check=False)
 
     # Clean up .encryption_key if it's a directory
     if os.path.exists('.encryption_key') and os.path.isdir('.encryption_key'):
@@ -355,7 +456,12 @@ def clean_deployment():
         import shutil
         shutil.rmtree('.encryption_key')
 
-    print_success("Deployment cleaned")
+    print_success("Deployment cleaned successfully")
+    print()
+    print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
+    print("  1. Start fresh deployment: python deploy.py start")
+    print("  2. Generate test data:     python generate_data.py --reset --count 10000")
+    print("  3. Run tests:              python run_tests.py")
     return True
 
 def check_status():
@@ -431,51 +537,96 @@ def check_status():
         print_success("API: Running (http://localhost:8000)")
     else:
         print_warning("API: Not running")
-        print_info("Start with: cd api && python app.py")
+        print_info("The API runs in Docker. Check logs with: docker logs poc_api")
+        print_info("Restart with: docker restart poc_api")
 
 def deploy_all():
-    """Full deployment"""
+    """Full deployment with state checking"""
     print_header("POC Deployment - Full Deployment")
     print_info(f"Platform: {platform.system()} {platform.release()}")
     print_info(f"Python: {sys.version.split()[0]}")
 
+    # Check current state
+    print_info("Checking current deployment state...")
+    state = check_deployment_state()
+
+    # Check if already fully deployed
+    if state['containers_running'] and state['mongodb_healthy'] and state['alloydb_healthy'] and state['api_running']:
+        print_warning("Deployment already exists and is healthy!")
+        print()
+        print(f"{Colors.BOLD}Current State:{Colors.ENDC}")
+        print(f"  • Containers: {Colors.OKGREEN}Running{Colors.ENDC}")
+        print(f"  • MongoDB: {Colors.OKGREEN}Healthy{Colors.ENDC}")
+        print(f"  • AlloyDB: {Colors.OKGREEN}Healthy{Colors.ENDC}")
+        print(f"  • API: {Colors.OKGREEN}Running{Colors.ENDC}")
+        if state['replica_set_initialized']:
+            print(f"  • Replica Set: {Colors.OKGREEN}Initialized{Colors.ENDC}")
+        if state['encryption_key_exists']:
+            print(f"  • Encryption Key: {Colors.OKGREEN}Present{Colors.ENDC}")
+        if state['data_exists']:
+            print(f"  • Data: {Colors.OKGREEN}Present{Colors.ENDC}")
+        print()
+        print(f"{Colors.BOLD}Options:{Colors.ENDC}")
+        print("  • To restart:        python deploy.py restart")
+        print("  • To check status:   python deploy.py status")
+        print("  • To clean and redeploy: python deploy.py clean && python deploy.py start")
+        print()
+        return
+
+    # If containers exist but not running, restart them
+    if state['containers_exist'] and not state['containers_running']:
+        print_info("Containers exist but not running. Starting them...")
+        run_command("docker-compose start", check=False)
+        time.sleep(5)
+        # Re-check state
+        state = check_deployment_state()
+
     # Check prerequisites
     check_prerequisites()
 
-    # Start containers
-    if not start_containers():
-        print_error("Deployment failed at container startup")
-        sys.exit(1)
+    # Start containers if needed
+    if not state['containers_running']:
+        if not start_containers():
+            print_error("Deployment failed at container startup")
+            sys.exit(1)
+        state = check_deployment_state()
 
-    # Initialize replica set
-    if not init_replica_set():
-        print_error("Deployment failed at replica set initialization")
-        sys.exit(1)
+    # Initialize replica set if needed
+    if not state['replica_set_initialized']:
+        if not init_replica_set():
+            print_error("Deployment failed at replica set initialization")
+            sys.exit(1)
 
-    # Create users
+    # Create users (idempotent - will skip if already exist)
     create_database_users()
 
-    # Setup encryption
+    # Setup encryption (always call - function is idempotent and checks MongoDB key vault)
     if not setup_encryption():
         print_error("Deployment failed at encryption setup")
         sys.exit(1)
 
-    # Wait for API container to be ready
-    print_header("Waiting for API")
-    print_info("Waiting for API container to start...")
-    max_wait = 30
-    api_ready = False
-    for i in range(max_wait):
-        time.sleep(2)
-        result = run_command("curl -s http://localhost:8000/health", check=False, capture_output=True)
-        if result and "healthy" in result:
-            print_success("API is ready")
-            api_ready = True
-            break
-        print(f"  Waiting... ({i+1}/{max_wait})")
+    # Recreate API container to remount encryption key file
+    if not state['api_running']:
+        print_info("Starting API container...")
+        run_command("docker rm -f poc_api", check=False)
+        run_command("docker-compose up -d api", check=False)
+        time.sleep(3)
 
-    if not api_ready:
-        print_warning("API health check timed out, but continuing...")
+        # Wait for API container to be ready
+        print_info("Waiting for API to start...")
+        max_wait = 30
+        api_ready = False
+        for i in range(max_wait):
+            time.sleep(2)
+            result = run_command("curl -s http://localhost:8000/health", check=False, capture_output=True)
+            if result and "healthy" in result:
+                print_success("API is ready")
+                api_ready = True
+                break
+            print(f"  Waiting... ({i+1}/{max_wait})")
+
+        if not api_ready:
+            print_warning("API health check timed out, but continuing...")
 
     # Final status
     print_header("Deployment Complete!")

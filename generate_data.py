@@ -14,7 +14,7 @@ import os
 import argparse
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 from pathlib import Path
 import base64
@@ -182,7 +182,22 @@ def connect_mongodb():
     print_info("Connecting to MongoDB...")
 
     try:
-        client = MongoClient("mongodb://localhost:27017/?directConnection=true")
+        # Connect with proper settings for single-node replica set
+        # directConnection=true: Bypass replica set discovery
+        # w=1: Write concern - wait for acknowledgment from primary only
+        # readPreference=primary: Read from primary node only
+        # readConcernLevel=local: Don't wait for replication acknowledgment
+        # serverSelectionTimeoutMS=5000: Timeout for server selection (5 seconds)
+        # socketTimeoutMS=10000: Socket timeout (10 seconds)
+        client = MongoClient(
+            "mongodb://localhost:27017/?"
+            "directConnection=true&"
+            "w=1&"
+            "readPreference=primary&"
+            "readConcernLevel=local&"
+            "serverSelectionTimeoutMS=5000&"
+            "socketTimeoutMS=10000"
+        )
         db = client["poc_database"]
 
         # Test connection
@@ -220,7 +235,9 @@ def setup_encryption(client):
     # Read master key
     key_path = Path(".encryption_key")
     if not key_path.exists():
-        print_error("Encryption key not found. Run: python mongodb/setup-encryption.py")
+        print_error("Encryption key not found.")
+        print_error("Please run: python deploy.py start")
+        print_error("This will setup encryption and start all services.")
         sys.exit(1)
 
     with open(key_path, 'r') as f:
@@ -265,7 +282,7 @@ def setup_encryption(client):
 
     return client_encryption, key_mapping
 
-def insert_mongodb_data(db, client_encryption, key_ids, customers, reset=False):
+def insert_mongodb_data(db, client_encryption, key_ids, customers, reset=False, mongo_client=None):
     """Insert encrypted customer data into MongoDB"""
     print_header("Inserting Data into MongoDB")
 
@@ -361,29 +378,54 @@ def insert_mongodb_data(db, client_encryption, key_ids, customers, reset=False):
                 "last_purchase_date": client_encryption.encrypt(customer["last_purchase_date"], Algorithm.UNINDEXED, key_id=general_key_id),
                 "lifetime_value": client_encryption.encrypt(str(customer["lifetime_value"]), Algorithm.UNINDEXED, key_id=general_key_id)
             },
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
         }
 
         collection.insert_one(encrypted_doc)
         print_progress(i+1, len(customers), f"({i+1}/{len(customers)} customers)")
 
-    final_count = collection.count_documents({})
+    # Ensure all output is flushed
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    print_info("Loop completed, closing encryption client...")
+    sys.stdout.flush()
+
+    # Close the encryption client to release any resources
+    client_encryption.close()
+
+    print_info("Creating fresh MongoDB connection for count...")
+    sys.stdout.flush()
+
+    # Create a fresh connection to avoid any state issues from encryption operations
+    if mongo_client:
+        mongo_client.close()
+
+    fresh_client, fresh_db = connect_mongodb()
+    fresh_collection = fresh_db["customers"]
+
+    print_info("Counting documents with fresh connection...")
+    sys.stdout.flush()
+
+    final_count = fresh_collection.estimated_document_count()
     print_success(f"MongoDB: {final_count} total customer records")
 
-def insert_alloydb_data(conn, customers, orders, reset=False):
-    """Insert customer and order data into AlloyDB"""
+    fresh_client.close()
+
+def insert_alloydb_data(conn, customers, reset=False):
+    """Insert customer data into AlloyDB (simplified - no orders or metadata tables)"""
     print_header("Inserting Data into AlloyDB")
 
     cursor = conn.cursor()
 
     if reset:
-        print_info("Resetting AlloyDB tables...")
-        cursor.execute("TRUNCATE TABLE orders, customer_metadata, customers CASCADE;")
+        print_info("Resetting AlloyDB customers table...")
+        cursor.execute("TRUNCATE TABLE customers CASCADE;")
         conn.commit()
-        print_success("Tables reset")
+        print_success("Table reset")
 
-    # Insert customers
+    # Insert customers with all fields
     print_info(f"Inserting {len(customers)} customer records...")
 
     customer_records = [
@@ -398,78 +440,33 @@ def insert_alloydb_data(conn, customers, orders, reset=False):
                 "state": c["state"],
                 "zip_code": c["zip_code"]
             }),
-            c["preferences"]
-        )
-        for c in customers
-    ]
-
-    execute_batch(
-        cursor,
-        """
-        INSERT INTO customers (id, full_name, email, phone, address, preferences)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (id) DO NOTHING
-        """,
-        customer_records
-    )
-
-    print_success(f"Inserted {len(customers)} customers")
-
-    # Insert customer metadata
-    print_info(f"Inserting {len(customers)} customer metadata records...")
-
-    metadata_records = [
-        (
-            str(uuid.uuid4()),
-            c["id"],
-            c["loyalty_points"],
+            c["preferences"],
             c["tier"],
-            datetime.now() - timedelta(days=random.randint(1, 365)),
+            c["loyalty_points"],
+            c["last_purchase_date"],
             c["lifetime_value"]
         )
         for c in customers
     ]
 
-    execute_batch(
-        cursor,
-        """
-        INSERT INTO customer_metadata (id, customer_id, loyalty_points, tier, last_purchase_date, lifetime_value)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT DO NOTHING
-        """,
-        metadata_records
-    )
+    # Insert in batches with progress
+    batch_size = 1000
 
-    print_success(f"Inserted {len(customers)} metadata records")
-
-    # Insert orders
-    print_info(f"Inserting {len(orders)} order records...")
-
-    order_records = [
-        (
-            o["id"],
-            o["customer_id"],
-            o["order_number"],
-            o["order_date"],
-            o["total_amount"],
-            o["status"],
-            o["items"],
-            o["shipping_address"]
+    for i in range(0, len(customer_records), batch_size):
+        batch = customer_records[i:i + batch_size]
+        execute_batch(
+            cursor,
+            """
+            INSERT INTO customers (id, full_name, email, phone, address, preferences, tier, loyalty_points, last_purchase_date, lifetime_value)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            batch
         )
-        for o in orders
-    ]
+        records_done = min(i + batch_size, len(customer_records))
+        print_progress(records_done, len(customer_records), f"({records_done}/{len(customer_records)} customers)")
 
-    execute_batch(
-        cursor,
-        """
-        INSERT INTO orders (id, customer_id, order_number, order_date, total_amount, status, items, shipping_address)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (order_number) DO NOTHING
-        """,
-        order_records
-    )
-
-    print_success(f"Inserted {len(orders)} orders")
+    print_success(f"AlloyDB: {len(customers)} customer records")
 
     conn.commit()
     cursor.close()
@@ -478,11 +475,9 @@ def insert_alloydb_data(conn, customers, orders, reset=False):
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM customers")
     customer_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM orders")
-    order_count = cursor.fetchone()[0]
     cursor.close()
 
-    print_success(f"AlloyDB: {customer_count} customers, {order_count} orders")
+    print_success(f"AlloyDB: {customer_count} total customers")
 
 def main():
     """Main entry point"""
@@ -502,10 +497,6 @@ def main():
     customers = generate_customer_data(args.count)
     print_success(f"Generated {len(customers)} customers")
 
-    print_info("Generating order data...")
-    orders = generate_orders(customers)
-    print_success(f"Generated {len(orders)} orders")
-
     # Connect to databases
     mongo_client, mongo_db = connect_mongodb()
     alloydb_conn = connect_alloydb()
@@ -514,8 +505,8 @@ def main():
     client_encryption, key_ids = setup_encryption(mongo_client)
 
     # Insert data
-    insert_mongodb_data(mongo_db, client_encryption, key_ids, customers, args.reset)
-    insert_alloydb_data(alloydb_conn, customers, orders, args.reset)
+    insert_mongodb_data(mongo_db, client_encryption, key_ids, customers, args.reset, mongo_client)
+    insert_alloydb_data(alloydb_conn, customers, args.reset)
 
     # Close connections
     mongo_client.close()
@@ -526,17 +517,17 @@ def main():
     print()
     print(f"{Colors.BOLD}Summary:{Colors.ENDC}")
     print(f"  • Customers: {len(customers)}")
-    print(f"  • Orders: {len(orders)}")
     print(f"  • MongoDB: Encrypted searchable fields")
-    print(f"  • AlloyDB: Complete customer data")
+    print(f"  • AlloyDB: Complete customer data (identical to MongoDB decrypted)")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
     print("  1. Run tests: python run_tests.py")
     print("  2. Test API:  http://localhost:8000/docs (API runs in Docker)")
     print()
     print(f"{Colors.BOLD}Mode Switching:{Colors.ENDC}")
-    print("  • Hybrid mode:        Default (MongoDB search → AlloyDB fetch)")
+    print("  • Hybrid mode:        Default (MongoDB search -> AlloyDB fetch)")
     print("  • MongoDB-only mode:  Add ?mode=mongodb_only to any search endpoint")
+    print("  • Both modes return identical data for fair performance comparison")
 
 if __name__ == "__main__":
     main()

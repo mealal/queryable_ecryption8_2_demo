@@ -402,7 +402,6 @@ def main():
     print(f"\nDatabase: {DATABASE_NAME}")
     print(f"Collection: {COLLECTION_NAME}")
     print(f"Key Vault: {KEY_VAULT_NAMESPACE}")
-    print("\nYou can now connect Denodo to this MongoDB instance.")
 
     setup_client.close()
     encrypted_client.close()
