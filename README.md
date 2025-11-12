@@ -33,9 +33,9 @@ FastAPI REST API (Port 8000)
 │   (Encrypted)     │   (Unencrypted)    │
 ├───────────────────┼────────────────────┤
 │ • Encrypted       │ • Full customer    │
-│   searchable      │   records          │
-│   fields          │ • Orders           │
-│ • Returns UUIDs   │ • Metadata         │
+│   searchable      │   data (identical  │
+│   fields          │   to MongoDB       │
+│ • Returns UUIDs   │   decrypted)       │
 └───────────────────┴────────────────────┘
 ```
 
@@ -46,7 +46,9 @@ FastAPI REST API (Port 8000)
 4. API fetches complete record from AlloyDB by UUID
 5. Returns full customer data + performance metrics
 
-**Use Case:** Compliance scenarios where encrypted fields must stay encrypted, AlloyDB for analytics
+**Use Case:** Compliance scenarios where encrypted fields must stay encrypted, AlloyDB for analytics/joins
+
+**Note:** Both modes return **identical data** for fair performance comparison
 
 #### **MongoDB-Only Mode**
 ```
@@ -97,7 +99,7 @@ GET /api/v1/customers/search/email?email=test@example.com&mode=mongodb_only
 
 ### Data
 - **10,000 encrypted customers** in MongoDB (configurable)
-- **10,000 customers + ~25,000 orders** in AlloyDB
+- **10,000 customers** in AlloyDB (identical to MongoDB decrypted data)
 - **5 Data Encryption Keys (DEKs)** for different fields
 
 ### Encrypted Fields
@@ -134,7 +136,6 @@ All search endpoints support `?mode=hybrid` (default) or `?mode=mongodb_only`:
 
 **Direct Queries:**
 - `GET /api/v1/customers/{id}?mode={mode}` - Get by UUID
-- `GET /api/v1/customers/tier/{tier}?mode={mode}` - Get by tier (AlloyDB query)
 
 **Utility:**
 - `GET /health` - Health check
@@ -288,10 +289,10 @@ python run_tests.py --report my_test_report.html
 ```
 
 **The test script will:**
-- ✅ Run 19 functional tests (health, encrypted searches, direct lookups)
+- ✅ Run 17 functional tests (health, encrypted searches)
 - ✅ Test BOTH Hybrid and MongoDB-Only modes
 - ✅ Display real-time metrics during execution
-- ✅ Run 22 performance tests (11 operations × 2 modes) with 100 iterations each
+- ✅ Run 18 performance tests (9 operations × 2 modes) with 100 iterations each
 - ✅ Calculate statistics (avg, median, min, max, std dev)
 - ✅ Generate HTML test report with mode comparison charts
 
@@ -344,8 +345,8 @@ Phone Equality Search (MongoDB-Only):
 ================================================================================
 
 Results:
-  Total Tests:    19
-  Passed:         19
+  Total Tests:    17
+  Passed:         17
   Failed:         0
   Pass Rate:      100.0%
   Total Duration: 0.31s
@@ -359,12 +360,12 @@ Results:
 
 After running tests, open [test_report.html](test_report.html) to view:
 - **Mode Comparison** - Side-by-side performance (Hybrid vs MongoDB-Only)
-- **Performance Metrics** - Detailed statistics for all 22 test scenarios
+- **Performance Metrics** - Detailed statistics for all 18 test scenarios
 - **Color-coded results** - Green = MongoDB-Only faster, Red = Hybrid faster
 
 **Key Findings from Test Report:**
-- MongoDB-Only faster for: Phone Equality (-7.2%), Category Equality (-7.3%), Name Substring First Name (-36.7%)
-- Hybrid faster for: Email searches (+12.9% to +16.7%), Direct ID Lookup (+20.2%)
+- MongoDB-Only faster for: Phone Equality (-7.2%), Category Equality (-7.3%), Name Substring searches (-36.7%)
+- Hybrid faster for: Email prefix searches (+12.9% to +16.7%)
 
 ### Manual Testing
 
@@ -494,15 +495,11 @@ This POC demonstrates all three MongoDB 8.2 encryption algorithms:
 - Phone Equality Search: ~17ms average
 - Email Prefix Search: ~16-18ms average
 - Name Substring Search: ~13-20ms average
-- Direct ID Lookup: ~8ms average
-- Tier Query: ~53ms average
 
 **MongoDB-Only Mode:**
 - Phone Equality Search: ~16ms average (7% faster)
 - Email Prefix Search: ~18-21ms average (slower)
-- Name Substring Search: ~12-14ms average (up to 37% faster for first name)
-- Direct ID Lookup: ~10ms average (20% slower)
-- Tier Query: ~53ms average (similar)
+- Name Substring Search: ~12-14ms average (up to 37% faster)
 
 **Overall:** Both modes perform similarly, with trade-offs depending on query type.
 
@@ -685,7 +682,7 @@ python deploy.py start
 # 2. Generate 10,000 customers
 python generate_data.py --reset --count 10000
 
-# 3. Run comprehensive tests (19 functional + 22 performance tests)
+# 3. Run comprehensive tests (17 functional + 18 performance tests)
 python run_tests.py
 
 # 4. View test report
@@ -762,9 +759,6 @@ curl "http://localhost:8000/api/v1/customers/search/name/substring?substring=Smi
 
 # Direct ID
 curl "http://localhost:8000/api/v1/customers/550e8400-e29b-41d4-a716-446655440001"
-
-# Tier query (AlloyDB)
-curl "http://localhost:8000/api/v1/customers/tier/premium"
 ```
 
 ---
@@ -785,4 +779,4 @@ curl "http://localhost:8000/api/v1/customers/tier/premium"
 **Security:** MongoDB 8.2 Queryable Encryption (INDEXED + TEXTPREVIEW + UNINDEXED)
 **Features:** Dual-mode architecture (Hybrid + MongoDB-Only)
 **Dataset:** 10,000 customers, ~25,000 orders
-**Tests:** 19 functional + 22 performance (100 iterations each)
+**Tests:** 17 functional + 18 performance (100 iterations each)

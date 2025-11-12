@@ -69,9 +69,6 @@ All search endpoints support `?mode=hybrid` or `?mode=mongodb_only`:
 - `GET /api/v1/customers/{id}?mode={mode}`
   Direct customer lookup by UUID
 
-- `GET /api/v1/customers/tier/{tier}?mode={mode}`
-  Filter by customer tier (Bronze/Silver/Gold/Platinum)
-
 ### Health
 - `GET /health` - Service health check
 

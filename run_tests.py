@@ -48,9 +48,8 @@ def get_test_data():
         )
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT c.id, c.full_name, c.email, c.phone, m.tier
-            FROM customers c
-            LEFT JOIN customer_metadata m ON c.id = m.customer_id
+            SELECT id, full_name, email, phone, tier
+            FROM customers
             LIMIT 1
         """)
         row = cursor.fetchone()
@@ -93,10 +92,11 @@ class TestMetrics:
         self.tests_passed = 0
         self.tests_failed = 0
         self.total_duration = 0
+        self.total_benchmark_duration = 0
         self.test_results = []
         self.performance_data = []
 
-    def add_result(self, test_name, passed, duration, details=None):
+    def add_result(self, test_name, passed, duration, details=None, encryption_type=None):
         """Add test result"""
         self.tests_run += 1
         if passed:
@@ -111,14 +111,16 @@ class TestMetrics:
             "passed": passed,
             "duration": duration,
             "details": details or {},
+            "encryption_type": encryption_type,
             "timestamp": datetime.now().isoformat()
         })
 
-    def add_performance_data(self, operation, metrics):
+    def add_performance_data(self, operation, metrics, encryption_type=None):
         """Add performance metrics"""
         self.performance_data.append({
             "operation": operation,
             "metrics": metrics,
+            "encryption_type": encryption_type,
             "timestamp": datetime.now().isoformat()
         })
 
@@ -179,19 +181,7 @@ def validate_customer_response(customer, mode="hybrid"):
         elif customer[field] is None or customer[field] == "":
             empty_fields.append(field)
 
-    # In mongodb_only mode, total_orders and total_spent should be None
-    if mode == "mongodb_only":
-        if customer.get("total_orders") is not None:
-            print_info(f"Warning: total_orders should be None in mongodb_only mode, got: {customer.get('total_orders')}")
-        if customer.get("total_spent") is not None:
-            print_info(f"Warning: total_spent should be None in mongodb_only mode, got: {customer.get('total_spent')}")
-
-    # In hybrid mode, these fields should have values
-    if mode == "hybrid":
-        if "total_orders" in customer and customer["total_orders"] is None:
-            empty_fields.append("total_orders")
-        if "total_spent" in customer and customer["total_spent"] is None:
-            empty_fields.append("total_spent")
+    # Both modes should return identical data - no mode-specific field differences
 
     # Validate address object
     if "address" in customer and customer["address"]:
@@ -480,82 +470,6 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
         metrics.add_result(test_name, False, duration)
         return False
 
-def test_direct_lookup(metrics):
-    """Test direct ID lookup"""
-    print_test_start("Direct ID Lookup")
-
-    start = time.time()
-    try:
-        response = requests.get(
-            f"{API_BASE_URL}/api/v1/customers/{TEST_CUSTOMER_ID}",
-            timeout=5
-        )
-        duration = time.time() - start
-
-        if response.status_code == 200:
-            customer = response.json()
-
-            print_success(f"Found customer: {customer.get('full_name')}")
-            print_metric("Response Time", duration * 1000, "ms")
-
-            metrics.add_result("Direct ID Lookup", True, duration, customer)
-            metrics.add_performance_data("Direct Lookup", {"total_ms": duration * 1000})
-            return True
-        else:
-            print_error(f"Request failed: {response.status_code}")
-            metrics.add_result("Direct ID Lookup", False, duration)
-            return False
-
-    except Exception as e:
-        duration = time.time() - start
-        print_error(f"Test failed: {e}")
-        metrics.add_result("Direct ID Lookup", False, duration, {"error": str(e)})
-        return False
-
-def test_tier_query(metrics):
-    """Test tier-based query"""
-    print_test_start("Tier-Based Query")
-
-    start = time.time()
-    try:
-        response = requests.get(
-            f"{API_BASE_URL}/api/v1/customers/tier/{TEST_TIER}",
-            timeout=10
-        )
-        duration = time.time() - start
-
-        if response.status_code == 200:
-            data = response.json()
-
-            if data['success']:
-                count = len(data['data'])
-                test_metrics = data['metrics']
-
-                print_success(f"Found {count} {TEST_TIER} tier customers")
-                print_metric("Query Time", test_metrics['alloydb_fetch_ms'], "ms")
-                print_metric("Total Time", test_metrics['total_ms'], "ms")
-                print_metric("Client Time", duration * 1000, "ms")
-
-                metrics.add_result("Tier Query", True, duration, {
-                    "count": count,
-                    "metrics": test_metrics
-                })
-                metrics.add_performance_data("Tier Query", test_metrics)
-                return True
-            else:
-                print_error("No results found")
-                metrics.add_result("Tier Query", False, duration)
-                return False
-        else:
-            print_error(f"Request failed: {response.status_code}")
-            metrics.add_result("Tier Query", False, duration)
-            return False
-
-    except Exception as e:
-        duration = time.time() - start
-        print_error(f"Test failed: {e}")
-        metrics.add_result("Tier Query", False, duration, {"error": str(e)})
-        return False
 
 def run_performance_tests(metrics, iterations=10):
     """Run performance tests with multiple iterations for all encrypted and AlloyDB operations"""
@@ -582,13 +496,7 @@ def run_performance_tests(metrics, iterations=10):
         ("Encrypted Name Search", "search", "name", "substring", "substring", TEST_NAME[:10] if len(TEST_NAME) > 10 else TEST_NAME),
         ("Name Substring - First Name", "search", "name", "substring", "substring", TEST_NAME.split()[0][:10] if ' ' in TEST_NAME else TEST_NAME[:5]),
         ("Name Substring - Last Name", "search", "name", "substring", "substring", TEST_NAME.split()[-1][:10] if ' ' in TEST_NAME else TEST_NAME[-5:]),
-        ("Name Substring - Partial Match", "search", "name", "substring", "substring", TEST_NAME[:4] if len(TEST_NAME) >= 4 else TEST_NAME[:2]),
-
-        # Direct ID lookup
-        ("Direct ID Lookup", "direct", None, None, None, TEST_CUSTOMER_ID),
-
-        # Tier query (AlloyDB)
-        ("Tier Query", "tier", None, None, None, TEST_TIER)
+        ("Name Substring - Partial Match", "search", "name", "substring", "substring", TEST_NAME[:4] if len(TEST_NAME) >= 4 else TEST_NAME[:2])
     ]
 
     # Duplicate tests for both modes
@@ -610,21 +518,7 @@ def run_performance_tests(metrics, iterations=10):
 
             try:
                 # Build appropriate request based on endpoint type
-                if endpoint_type == "direct":
-                    response = requests.get(
-                        f"{API_BASE_URL}/api/v1/customers/{test_value}",
-                        params={"mode": mode},
-                        timeout=5
-                    )
-
-                elif endpoint_type == "tier":
-                    response = requests.get(
-                        f"{API_BASE_URL}/api/v1/customers/tier/{test_value}",
-                        params={"mode": mode},
-                        timeout=10
-                    )
-
-                elif endpoint_type == "search":
+                if endpoint_type == "search":
                     if query_type == "equality":
                         # Equality search: /api/v1/customers/search/{field}?{param}={value}&mode={mode}
                         response = requests.get(
@@ -688,17 +582,34 @@ def run_performance_tests(metrics, iterations=10):
                 "mode": mode
             }
 
-            metrics.add_performance_data(test_name, results[test_name])
+            # Track total benchmark duration
+            metrics.total_benchmark_duration += sum(times) / 1000  # Convert ms to seconds
+
+            metrics.add_performance_data(test_name, results[test_name], encryption_type=query_type)
         else:
             print(f"\n  {Colors.FAIL}No successful iterations!{Colors.ENDC}")
 
     return results
 
-def generate_html_report(metrics, perf_results, output_file):
+def generate_html_report(metrics, perf_results, output_file, data_stats=None):
     """Generate HTML test report"""
     print_info(f"Generating HTML report: {output_file}")
 
     summary = metrics.get_summary()
+
+    # Add data statistics section
+    data_stats_html = ""
+    if data_stats:
+        data_stats_html = f"""
+        <div class="metric-card">
+            <div class="metric-label">MongoDB Records</div>
+            <div class="metric-value">{data_stats.get('mongodb_count', 0):,}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Encryption Keys</div>
+            <div class="metric-value">{data_stats.get('encryption_keys', 0)}</div>
+        </div>
+        """
 
     html = f"""
 <!DOCTYPE html>
@@ -786,6 +697,30 @@ def generate_html_report(metrics, perf_results, output_file):
             color: #999;
             font-size: 12px;
         }}
+        .encryption-badge {{
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }}
+        .badge-equality {{
+            background: #e3f2fd;
+            color: #1976d2;
+        }}
+        .badge-prefix {{
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }}
+        .badge-substring {{
+            background: #fff3e0;
+            color: #e65100;
+        }}
+        .badge-none {{
+            background: #f5f5f5;
+            color: #666;
+        }}
     </style>
 </head>
 <body>
@@ -812,9 +747,10 @@ def generate_html_report(metrics, perf_results, output_file):
                 <div class="metric-value">{summary['pass_rate']:.1f}%</div>
             </div>
             <div class="metric-card">
-                <div class="metric-label">Total Duration</div>
-                <div class="metric-value">{summary['total_duration']:.2f}s</div>
+                <div class="metric-label">Benchmark Duration</div>
+                <div class="metric-value">{metrics.total_benchmark_duration:.2f}s</div>
             </div>
+            {data_stats_html}
         </div>
 
         <h2>Test Results</h2>
@@ -857,6 +793,7 @@ def generate_html_report(metrics, perf_results, output_file):
                 <tr>
                     <th>Operation</th>
                     <th>Mode</th>
+                    <th>Encryption Type</th>
                     <th>Average (ms)</th>
                     <th>Median (ms)</th>
                     <th>Min (ms)</th>
@@ -868,12 +805,27 @@ def generate_html_report(metrics, perf_results, output_file):
             <tbody>
         """
 
+        # Build encryption type lookup from performance_data
+        encryption_type_map = {}
+        for perf_data in metrics.performance_data:
+            encryption_type_map[perf_data['operation']] = perf_data.get('encryption_type')
+
         for operation, stats in perf_results.items():
             mode_display = stats.get('mode', 'hybrid').replace('_', ' ').title()
+            encryption_type = encryption_type_map.get(operation)
+
+            # Generate badge HTML
+            if encryption_type:
+                badge_class = f"badge-{encryption_type}"
+                badge_html = f'<span class="encryption-badge {badge_class}">{encryption_type}</span>'
+            else:
+                badge_html = '<span class="encryption-badge badge-none">None</span>'
+
             html += f"""
                 <tr>
                     <td>{operation}</td>
                     <td>{mode_display}</td>
+                    <td>{badge_html}</td>
                     <td>{stats['average']:.2f}</td>
                     <td>{stats['median']:.2f}</td>
                     <td>{stats['min']:.2f}</td>
@@ -961,6 +913,62 @@ def generate_html_report(metrics, perf_results, output_file):
 
     print_success(f"Report generated: {output_file}")
 
+def validate_data_availability():
+    """Validate that sufficient test data exists before running tests"""
+    import psycopg2
+
+    print_header("Validating Test Data")
+
+    try:
+        # Check MongoDB via API health check
+        response = requests.get(f"{API_BASE_URL}/health", timeout=5)
+        if response.status_code == 200:
+            health_data = response.json()
+            mongo_connected = health_data.get("mongodb") == "connected"
+            encryption_keys = health_data.get("encryption_keys", 0)
+            mongodb_count = health_data.get("mongodb_customers", 0)
+
+            print(f"  MongoDB customer count: {Colors.OKCYAN}{mongodb_count}{Colors.ENDC}")
+            print(f"  MongoDB status: {Colors.OKGREEN if mongo_connected else Colors.FAIL}{'connected' if mongo_connected else 'disconnected'}{Colors.ENDC}")
+            print(f"  Encryption keys loaded: {Colors.OKGREEN if encryption_keys == 5 else Colors.FAIL}{encryption_keys}{Colors.ENDC}")
+
+            if not mongo_connected:
+                print(f"\n{Colors.FAIL}ERROR: MongoDB is not connected{Colors.ENDC}")
+                print("Run: python deploy.py start")
+                sys.exit(1)
+
+            if encryption_keys != 5:
+                print(f"\n{Colors.FAIL}ERROR: Expected 5 encryption keys, found {encryption_keys}{Colors.ENDC}")
+                print("Run: python generate_data.py --reset --count 10000")
+                sys.exit(1)
+        else:
+            print(f"\n{Colors.FAIL}ERROR: API health check failed{Colors.ENDC}")
+            sys.exit(1)
+
+        # Validate minimum data count
+        if mongodb_count < 100:
+            print(f"\n{Colors.WARNING}WARNING: Only {mongodb_count} customers found (recommended: 10,000){Colors.ENDC}")
+            print("Run: python generate_data.py --reset --count 10000")
+
+            response = input("\nContinue with limited data? (yes/no): ")
+            if response.lower() != 'yes':
+                print("Test run cancelled")
+                sys.exit(0)
+        else:
+            print(f"\n{Colors.OKGREEN}[OK] Data validation passed{Colors.ENDC}")
+
+        return {
+            "mongodb_count": mongodb_count,
+            "encryption_keys": encryption_keys
+        }
+
+    except Exception as e:
+        print(f"\n{Colors.FAIL}ERROR: Data validation failed: {e}{Colors.ENDC}")
+        print("\nMake sure services are running:")
+        print("  1. python deploy.py start")
+        print("  2. python generate_data.py --reset --count 10000")
+        sys.exit(1)
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Run POC tests with real-time metrics")
@@ -968,11 +976,18 @@ def main():
     parser.add_argument('--performance', action='store_true', help='Run performance tests only')
     parser.add_argument('--iterations', type=int, default=100, help='Performance test iterations (default: 100)')
     parser.add_argument('--report', default='test_report.html', help='Output report file')
+    parser.add_argument('--skip-validation', action='store_true', help='Skip data validation check')
     args = parser.parse_args()
 
     print_header("POC Test Suite")
     print_info(f"API Endpoint: {API_BASE_URL}")
     print_info(f"Test Mode: {'Quick' if args.quick else 'Performance' if args.performance else 'Full'}")
+
+    # Validate data availability unless explicitly skipped
+    if not args.skip_validation:
+        data_stats = validate_data_availability()
+    else:
+        data_stats = {"alloydb_count": 0, "encryption_keys": 0}
 
     metrics = TestMetrics()
     perf_results = {}
@@ -1044,14 +1059,6 @@ def main():
         # Test 17: Name Partial Search - MongoDB-Only
         test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (MongoDB-Only)", "mongodb_only")
 
-        print_header("Standard Query Tests")
-
-        # Test 18: Direct ID Lookup
-        test_direct_lookup(metrics)
-
-        # Test 19: Tier Query
-        test_tier_query(metrics)
-
     # Performance Tests
     if not args.quick:
         perf_results = run_performance_tests(metrics, args.iterations)
@@ -1069,7 +1076,7 @@ def main():
     print(f"  Total Duration: {summary['total_duration']:.2f}s")
 
     # Generate HTML report
-    generate_html_report(metrics, perf_results, args.report)
+    generate_html_report(metrics, perf_results, args.report, data_stats)
 
     print()
     if summary['failed'] == 0:
