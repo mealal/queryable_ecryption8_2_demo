@@ -174,7 +174,7 @@ def login_to_denodo_registry():
     """Automatically log in to Denodo Harbor registry"""
     registry = "harbor.open.denodo.com"
     username = "mealal@gmail.com"
-    password = "frn@erd9vua9bxq3BQR"
+    cli_secret = "c5q1SWoHqwadFJeoya2XejkqOhDOmOHr"  # Harbor CLI secret
 
     print_info("Checking Denodo registry authentication...")
 
@@ -214,7 +214,7 @@ def login_to_denodo_registry():
             stderr=subprocess.PIPE,
             text=True
         )
-        stdout, stderr = process.communicate(input=password)
+        stdout, stderr = process.communicate(input=cli_secret)
 
         if process.returncode == 0 or "Login Succeeded" in stdout or "Already logged in" in stdout:
             print_success(f"Successfully authenticated to {registry}")
