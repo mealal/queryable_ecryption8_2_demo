@@ -170,6 +170,63 @@ def check_prerequisites():
 
     print_success("\nAll prerequisites satisfied")
 
+def login_to_denodo_registry():
+    """Automatically log in to Denodo Harbor registry"""
+    registry = "harbor.open.denodo.com"
+    username = "denodo-open"
+    password = "Denodo123"
+
+    print_info("Checking Denodo registry authentication...")
+
+    # Check if already logged in by trying to pull manifest
+    check_auth = run_command(
+        f"docker manifest inspect {registry}/denodo-express/denodo-platform:latest > nul 2>&1",
+        check=False,
+        capture_output=True
+    )
+
+    # If manifest check succeeds, we're already authenticated
+    if check_auth or run_command("docker info", check=False, capture_output=True):
+        # Try a simpler check - attempt to login (will succeed quickly if already logged in)
+        login_result = run_command(
+            f"docker login {registry} -u {username} --password-stdin",
+            check=False,
+            capture_output=True
+        )
+
+        if login_result and "Login Succeeded" in login_result:
+            print_success(f"Authenticated to {registry}")
+            return True
+        elif login_result and "Already logged in" in login_result:
+            print_success(f"Already authenticated to {registry}")
+            return True
+
+    # If we get here, we need to login
+    print_info(f"Logging in to {registry}...")
+
+    # Use subprocess to pipe password to docker login
+    try:
+        import subprocess
+        process = subprocess.Popen(
+            ["docker", "login", registry, "-u", username, "--password-stdin"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=password)
+
+        if process.returncode == 0 or "Login Succeeded" in stdout or "Already logged in" in stdout:
+            print_success(f"Successfully authenticated to {registry}")
+            return True
+        else:
+            print_warning(f"Failed to authenticate to {registry}")
+            print_warning(f"Error: {stderr}")
+            return False
+    except Exception as e:
+        print_warning(f"Failed to authenticate to {registry}: {e}")
+        return False
+
 def pull_denodo_image():
     """Pull Denodo Express image from Harbor registry"""
     print_header("Pulling Denodo Image")
@@ -190,6 +247,11 @@ def pull_denodo_image():
         print_success("Denodo image already exists locally")
         return True
 
+    # Ensure we're logged in to the registry
+    if not login_to_denodo_registry():
+        print_warning("Continuing without Denodo registry authentication")
+        print_info("Deployment will continue, but Denodo image pull may fail")
+
     print_info(f"Pulling Denodo image from Harbor registry...")
     print_info("Image: harbor.open.denodo.com/denodo-express/denodo-platform")
 
@@ -204,20 +266,8 @@ def pull_denodo_image():
         print_success("Denodo image pulled successfully")
         return True
     else:
-        print_warning("Failed to pull Denodo image")
-        print_warning("This may be due to:")
-        print_warning("  1. Not authenticated with Harbor registry")
-        print_warning("  2. Network connectivity issues")
-        print_warning("  3. Invalid credentials")
-        print()
-        print_info("To authenticate with Harbor:")
-        print_info("  1. Visit: https://harbor.open.denodo.com")
-        print_info("  2. Login and generate CLI secret from User Profile")
-        print_info("  3. Run: docker login harbor.open.denodo.com --username YOUR_USERNAME")
-        print_info("  4. Enter the CLI secret when prompted")
-        print()
-        print_info("Deployment will continue, but Denodo will not be available.")
-        print_info("See DENODO_DOCKER_SETUP.md for detailed instructions.")
+        print_warning("Failed to pull Denodo image - continuing deployment without Denodo")
+        print_info("The POC will work with MongoDB and AlloyDB, but Denodo features will be unavailable")
         return False
 
 def start_containers():

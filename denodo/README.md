@@ -53,13 +53,34 @@ The test suite (`run_tests.py`) tracks these limitations:
 
 ---
 
+## Prerequisites
+
+### Docker Registry Authentication
+
+The Denodo Docker image is hosted on a private registry that requires authentication.
+
+**Registry**: `harbor.open.denodo.com`
+
+**Automatic Authentication**: The deployment script (`python deploy.py start`) automatically handles Docker registry authentication using these credentials:
+- Username: `denodo-open`
+- Password: `Denodo123`
+
+**Manual Login** (optional - only if automatic login fails):
+```bash
+docker login harbor.open.denodo.com
+```
+
+**Note**: Authentication happens automatically during deployment. If the Denodo image cannot be pulled, the deployment continues without Denodo (MongoDB and AlloyDB will still work).
+
+---
+
 ## Components
 
 ### 1. Docker Configuration
 
 **File**: [Dockerfile](Dockerfile)
 
-- Base Image: `denodo/denodovdp:9.0-latest`
+- Base Image: `harbor.open.denodo.com/denodo-express/denodo-platform@sha256:7e10101863621ed0656e525ec9463a487be867bc6a3a12b09293153929e3bb54`
 - License: Mounted from root directory
 - Ports:
   - `9999`: Virtual DataPort Server
