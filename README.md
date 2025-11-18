@@ -187,12 +187,15 @@ All search endpoints support `?mode=hybrid` (default) or `?mode=mongodb_only`:
 ### Fully Automated Deployment
 
 ```bash
-# 1. Deploy ALL components and start services
+# 1. Deploy MongoDB + AlloyDB + API (Denodo optional)
 #    - Docker containers (MongoDB, AlloyDB, API)
 #    - Replica set initialization
 #    - Database users
 #    - Encryption keys (auto-generated and saved)
 python deploy.py start
+
+# Optional: Include Denodo Virtual DataPort
+python deploy.py start --with-denodo
 
 # 2. Generate test data (10,000 customers with encrypted PII)
 python generate_data.py --reset --count 10000
@@ -205,7 +208,9 @@ python run_tests.py
 
 **API available at:** http://localhost:8000/docs
 
-**Note:** The API runs automatically in Docker (container: poc_api). No manual `python app.py` needed.
+**Note:**
+- The API runs automatically in Docker (container: poc_api). No manual `python app.py` needed.
+- Denodo is **disabled by default**. Use `--with-denodo` flag to enable it.
 
 ---
 
@@ -214,8 +219,11 @@ python run_tests.py
 ### Option 1: Automated Deployment (Recommended)
 
 ```bash
-# Full deployment with one command
+# Standard deployment (MongoDB + AlloyDB + API)
 python deploy.py start
+
+# With Denodo Virtual DataPort
+python deploy.py start --with-denodo
 ```
 
 **This script will (100% automated):**
@@ -229,8 +237,11 @@ python deploy.py start
 - ✅ Setup encryption schema
 - ✅ Install API dependencies
 - ✅ Verify all components are ready
+- ✅ (Optional) Deploy Denodo with `--with-denodo` flag
 
 **No manual steps required!** Everything is configured automatically.
+
+**Denodo Note:** Denodo Virtual DataPort is disabled by default to simplify deployment. Enable it only when needed for data virtualization testing.
 
 **Other deployment commands:**
 ```bash
@@ -778,11 +789,13 @@ python run_tests.py
 ### Deployment Commands
 
 ```bash
-python deploy.py start     # Deploy all components
-python deploy.py status    # Check status
-python deploy.py stop      # Stop containers
-python deploy.py restart   # Restart everything
-python deploy.py clean     # Clean all data
+python deploy.py start                  # Deploy MongoDB + AlloyDB + API
+python deploy.py start --with-denodo   # Include Denodo Virtual DataPort
+python deploy.py status                 # Check status
+python deploy.py stop                   # Stop containers
+python deploy.py restart                # Restart everything
+python deploy.py restart --with-denodo  # Restart with Denodo
+python deploy.py clean                  # Clean all data
 ```
 
 ### Data Generation Commands

@@ -4,11 +4,14 @@ POC Deployment Script
 Cross-platform deployment for MongoDB + AlloyDB + API
 
 Usage:
-    python deploy.py start    # Deploy and start all components
-    python deploy.py stop     # Stop all components
-    python deploy.py restart  # Restart all components
-    python deploy.py status   # Check status of all components
-    python deploy.py clean    # Stop and remove all data (WARNING: destructive)
+    python deploy.py start [--with-denodo]  # Deploy and start all components
+    python deploy.py stop                    # Stop all components
+    python deploy.py restart [--with-denodo] # Restart all components
+    python deploy.py status                  # Check status of all components
+    python deploy.py clean                   # Stop and remove all data (WARNING: destructive)
+
+Options:
+    --with-denodo    Include Denodo Virtual DataPort in deployment (optional)
 """
 
 import subprocess
@@ -16,7 +19,11 @@ import sys
 import time
 import os
 import platform
+import argparse
 from pathlib import Path
+
+# Global flag for Denodo deployment
+DEPLOY_DENODO = False
 
 # ANSI color codes for terminal output
 class Colors:
@@ -819,7 +826,8 @@ def deploy_all():
     check_prerequisites()
 
     # Pull Denodo image (optional - won't fail deployment if unsuccessful)
-    pull_denodo_image()
+    if DEPLOY_DENODO:
+        pull_denodo_image()
 
     # Start containers if needed
     if not state['containers_running']:
@@ -878,7 +886,8 @@ def deploy_all():
         print_info("Data already exists, skipping initial data generation")
 
     # Initialize Denodo (optional - won't fail deployment if skipped)
-    init_denodo()
+    if DEPLOY_DENODO:
+        init_denodo()
 
     # Final status
     print_header("Deployment Complete!")
@@ -890,7 +899,8 @@ def deploy_all():
     print("  • AlloyDB:  localhost:5432")
     print("  • API:      http://localhost:8000")
     print("  • API Docs: http://localhost:8000/docs")
-    print("  • Denodo:   http://localhost:9090 (if initialized)")
+    if DEPLOY_DENODO:
+        print("  • Denodo:   http://localhost:9090 (if initialized)")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
     print("  1. Run tests:                python run_tests.py")
@@ -899,19 +909,38 @@ def deploy_all():
 
 def main():
     """Main entry point"""
-    if len(sys.argv) < 2:
-        print("Usage: python deploy.py {start|stop|restart|status|clean|generate}")
-        print()
-        print("Commands:")
-        print("  start              - Deploy and start all components")
-        print("  stop               - Stop all components")
-        print("  restart            - Restart all components")
-        print("  status             - Check status of all components")
-        print("  clean              - Stop and remove all data (WARNING: destructive)")
-        print("  generate [--count N] - Generate additional test data (default: 10000)")
-        sys.exit(1)
+    global DEPLOY_DENODO
 
-    command = sys.argv[1].lower()
+    parser = argparse.ArgumentParser(
+        description='POC Deployment Script - MongoDB + AlloyDB + API',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        'command',
+        choices=['start', 'stop', 'restart', 'status', 'clean', 'generate'],
+        help='Command to execute'
+    )
+    parser.add_argument(
+        '--with-denodo',
+        action='store_true',
+        help='Include Denodo Virtual DataPort in deployment (optional)'
+    )
+    parser.add_argument(
+        '--count',
+        type=int,
+        default=10000,
+        help='Number of records to generate (for generate command, default: 10000)'
+    )
+
+    args = parser.parse_args()
+
+    # Set global Denodo flag
+    DEPLOY_DENODO = args.with_denodo
+
+    if DEPLOY_DENODO:
+        print_info("Denodo deployment enabled via --with-denodo flag")
+
+    command = args.command.lower()
 
     if command == 'start':
         deploy_all()
@@ -929,7 +958,6 @@ def main():
         generate_more_data()
     else:
         print_error(f"Unknown command: {command}")
-        print("Valid commands: start, stop, restart, status, clean, generate")
         sys.exit(1)
 
 if __name__ == "__main__":

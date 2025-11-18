@@ -758,44 +758,8 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
         </div>
         """
 
-    # Add Denodo license statistics
+    # Denodo license statistics removed permanently per user request
     denodo_stats_html = ""
-    if DENODO_AVAILABLE and license_limiter:
-        license_stats = license_limiter.get_stats()
-        violation_class = "warning" if license_stats['license_violations'] > 0 else ""
-        denodo_stats_html = f"""
-        <div class="section">
-            <h2>⚖️ Denodo License Usage</h2>
-            <div class="metrics-grid">
-                <div class="metric-card">
-                    <div class="metric-label">Total Requests</div>
-                    <div class="metric-value">{license_stats['total_requests']}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Max Concurrent</div>
-                    <div class="metric-value">{license_stats['max_concurrent_requests']}/{license_stats['max_allowed_concurrent']}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Throttled Requests</div>
-                    <div class="metric-value">{license_stats['throttled_requests']}</div>
-                </div>
-                <div class="metric-card {violation_class}">
-                    <div class="metric-label">License Violations</div>
-                    <div class="metric-value">{license_stats['license_violations']}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Max Rows Per Query</div>
-                    <div class="metric-value">{license_stats['max_rows_per_query']:,}</div>
-                </div>
-            </div>
-            <div class="note">
-                <strong>Denodo Express License Limitations:</strong><br>
-                • MaxSimultaneousRequests: {license_stats['max_allowed_concurrent']}<br>
-                • MaxRowsPerQuery: {license_stats['max_rows_per_query']:,}<br>
-                • Expiration: 2026-12-01
-            </div>
-        </div>
-        """
 
     html = f"""
 <!DOCTYPE html>
@@ -1171,8 +1135,27 @@ def validate_data_availability():
         print("  2. python deploy.py generate --count 10000")
         sys.exit(1)
 
+def check_denodo_running():
+    """Check if Denodo Docker container is running"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            "docker ps --filter name=poc_denodo --format '{{.Names}}'",
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return result.returncode == 0 and 'poc_denodo' in result.stdout
+    except Exception:
+        return False
+
 def check_denodo_endpoints():
     """Check if Denodo REST endpoints are available"""
+    # First check if Denodo container is running
+    if not check_denodo_running():
+        return False
+
     if not DENODO_AVAILABLE or not DENODO_CLIENT:
         return False
 
@@ -1227,8 +1210,9 @@ def main():
         data_stats = {"alloydb_count": 0, "encryption_keys": 0}
 
     # Check if Denodo endpoints are available
-    denodo_endpoints_available = check_denodo_endpoints()
-    if not denodo_endpoints_available:
+    denodo_running = check_denodo_running()
+    denodo_endpoints_available = check_denodo_endpoints() if denodo_running else False
+    if denodo_running and not denodo_endpoints_available:
         print_info("\nDenodo tests will be skipped - endpoints not available")
 
     metrics = TestMetrics()
