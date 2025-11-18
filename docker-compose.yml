@@ -65,8 +65,10 @@ services:
         condition: service_healthy
     command: python api/app.py
 
-  # Denodo Express 9.0
+  # Denodo Express 9.0 (optional - enable with --profile denodo)
   denodo:
+    profiles:
+      - denodo
     build:
       context: .
       dockerfile: denodo/Dockerfile

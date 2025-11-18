@@ -281,9 +281,15 @@ def start_containers():
     """Start Docker containers"""
     print_header("Starting Docker Containers")
 
-    print_info("Starting MongoDB and AlloyDB containers...")
+    # Build docker-compose command with optional Denodo profile
+    if DEPLOY_DENODO:
+        print_info("Starting MongoDB, AlloyDB, API, and Denodo containers...")
+        compose_cmd = "docker-compose --profile denodo up -d"
+    else:
+        print_info("Starting MongoDB, AlloyDB, and API containers...")
+        compose_cmd = "docker-compose up -d"
 
-    if not run_command("docker-compose up -d"):
+    if not run_command(compose_cmd):
         print_error("Failed to start containers")
         return False
 
