@@ -792,10 +792,11 @@ python run_tests.py
 python deploy.py start                  # Deploy MongoDB + AlloyDB + API
 python deploy.py start --with-denodo   # Include Denodo Virtual DataPort
 python deploy.py status                 # Check status
-python deploy.py stop                   # Stop containers
+python deploy.py stop                   # Stop containers (auto-detects Denodo)
 python deploy.py restart                # Restart everything
 python deploy.py restart --with-denodo  # Restart with Denodo
-python deploy.py clean                  # Clean all data
+python deploy.py clean                  # Clean all data (auto-detects Denodo)
+python deploy.py clean --with-denodo    # Explicitly clean including Denodo
 ```
 
 ### Data Generation Commands

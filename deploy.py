@@ -281,6 +281,13 @@ def start_containers():
     """Start Docker containers"""
     print_header("Starting Docker Containers")
 
+    # Rebuild API container to ensure Dockerfile changes are applied
+    # This is critical for multi-architecture support (x86_64 vs ARM64)
+    print_info("Building API container (ensures latest Dockerfile changes)...")
+    if not run_command("docker-compose build api"):
+        print_error("Failed to build API container")
+        return False
+
     # Build docker-compose command with optional Denodo profile
     if DEPLOY_DENODO:
         print_info("Starting MongoDB, AlloyDB, API, and Denodo containers...")
@@ -617,13 +624,30 @@ def stop_containers():
         print_info("Containers already stopped.")
         return True
 
+    # Check if Denodo container is running
+    denodo_running = run_command(
+        "docker ps --filter name=poc_denodo --format '{{.Names}}'",
+        check=False,
+        capture_output=True
+    )
+    has_denodo = denodo_running and 'poc_denodo' in denodo_running
+
     print_info("Stopping containers...")
 
-    if run_command("docker-compose stop", check=False):
+    # Use --profile denodo if Denodo is running or flag is set
+    if DEPLOY_DENODO or has_denodo:
+        stop_cmd = "docker-compose --profile denodo stop"
+    else:
+        stop_cmd = "docker-compose stop"
+
+    if run_command(stop_cmd, check=False):
         print_success("Containers stopped successfully")
         print()
         print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-        print("  • To start again:  python deploy.py start")
+        if DEPLOY_DENODO or has_denodo:
+            print("  • To start again:  python deploy.py start --with-denodo")
+        else:
+            print("  • To start again:  python deploy.py start")
         print("  • To check status: python deploy.py status")
         return True
     else:
@@ -641,19 +665,35 @@ def clean_deployment():
         print_info("No deployment found. Nothing to clean.")
         return True
 
+    # Check if Denodo container exists
+    denodo_exists = run_command(
+        "docker ps -a --filter name=poc_denodo --format '{{.Names}}'",
+        check=False,
+        capture_output=True
+    )
+    has_denodo = denodo_exists and 'poc_denodo' in denodo_exists
+
     print_warning("This will remove ALL data including Docker volumes!")
     print_warning("The following will be deleted:")
     print()
 
     if state['containers_exist']:
-        print(f"  • Docker containers: {Colors.FAIL}poc_mongodb, poc_alloydb, poc_api{Colors.ENDC}")
+        containers_list = "poc_mongodb, poc_alloydb, poc_api"
+        if has_denodo or DEPLOY_DENODO:
+            containers_list += ", poc_denodo"
+        print(f"  • Docker containers: {Colors.FAIL}{containers_list}{Colors.ENDC}")
     if state['data_exists']:
         print(f"  • Database data: {Colors.FAIL}MongoDB and AlloyDB data{Colors.ENDC}")
+    if has_denodo or DEPLOY_DENODO:
+        print(f"  • Denodo data: {Colors.FAIL}Denodo metadata{Colors.ENDC}")
     if state['encryption_key_exists']:
         print(f"  • Encryption key: {Colors.WARNING}Will be preserved{Colors.ENDC}")
 
     print()
-    print_info("To start fresh after cleaning, run: python deploy.py start")
+    if DEPLOY_DENODO:
+        print_info("To start fresh after cleaning, run: python deploy.py start --with-denodo")
+    else:
+        print_info("To start fresh after cleaning, run: python deploy.py start")
     print()
 
     response = input("Are you sure? Type 'yes' to confirm: ")
@@ -662,7 +702,13 @@ def clean_deployment():
         return False
 
     print_info("Stopping and removing containers...")
-    run_command("docker-compose down -v", check=False)
+
+    # Use --profile denodo if Denodo flag is set or Denodo container exists
+    if DEPLOY_DENODO or has_denodo:
+        print_info("Including Denodo in cleanup...")
+        run_command("docker-compose --profile denodo down -v", check=False)
+    else:
+        run_command("docker-compose down -v", check=False)
 
     # Clean up .encryption_key if it's a directory
     if os.path.exists('.encryption_key') and os.path.isdir('.encryption_key'):

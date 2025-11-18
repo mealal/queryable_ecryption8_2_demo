@@ -15,14 +15,27 @@ RUN pip install --no-cache-dir -r /app/api/requirements.txt
 
 # Download and install MongoDB crypt_shared library for automatic encryption
 # Using MongoDB 8.2.1 crypt_shared to support substringPreview query type
-RUN mkdir -p /usr/local/lib/mongo_crypt && \
+# Automatically detect architecture (x86_64 or aarch64/arm64)
+RUN ARCH=$(uname -m) && \
+    echo "Detected architecture: $ARCH" && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        CRYPT_SHARED_URL="https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2204-8.2.1.tgz"; \
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        CRYPT_SHARED_URL="https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-aarch64-enterprise-ubuntu2204-8.2.1.tgz"; \
+    else \
+        echo "Unsupported architecture: $ARCH"; \
+        exit 1; \
+    fi && \
+    echo "Downloading crypt_shared from: $CRYPT_SHARED_URL" && \
+    mkdir -p /usr/local/lib/mongo_crypt && \
     cd /tmp && \
-    curl -L https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-x86_64-enterprise-ubuntu2204-8.2.1.tgz -o crypt_shared.tgz && \
+    curl -L "$CRYPT_SHARED_URL" -o crypt_shared.tgz && \
     tar -xzf crypt_shared.tgz && \
     cp -r lib/* /usr/local/lib/mongo_crypt/ && \
     echo "/usr/local/lib/mongo_crypt" > /etc/ld.so.conf.d/mongo_crypt.conf && \
     ldconfig && \
-    rm -rf /tmp/crypt_shared.tgz /tmp/lib
+    rm -rf /tmp/crypt_shared.tgz /tmp/lib && \
+    echo "crypt_shared library installed successfully for $ARCH"
 
 # Copy API code
 COPY api/ /app/api/
