@@ -61,16 +61,9 @@ The Denodo Docker image is hosted on a private registry that requires authentica
 
 **Registry**: `harbor.open.denodo.com`
 
-**Automatic Authentication**: The deployment script (`python deploy.py start`) automatically handles Docker registry authentication using these credentials:
-- Username: `denodo-open`
-- Password: `Denodo123`
+**Automatic Authentication**: The deployment script (`python deploy.py start`) automatically handles Docker registry authentication with embedded credentials.
 
-**Manual Login** (optional - only if automatic login fails):
-```bash
-docker login harbor.open.denodo.com
-```
-
-**Note**: Authentication happens automatically during deployment. If the Denodo image cannot be pulled, the deployment continues without Denodo (MongoDB and AlloyDB will still work).
+**Graceful Degradation**: If the Denodo image cannot be pulled (due to authentication or network issues), the deployment automatically continues without Denodo. MongoDB and AlloyDB will still work normally.
 
 ---
 

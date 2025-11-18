@@ -173,8 +173,8 @@ def check_prerequisites():
 def login_to_denodo_registry():
     """Automatically log in to Denodo Harbor registry"""
     registry = "harbor.open.denodo.com"
-    username = "denodo-open"
-    password = "Denodo123"
+    username = "mealal@gmail.com"
+    password = "frn@erd9vua9bxq3BQR"
 
     print_info("Checking Denodo registry authentication...")
 
