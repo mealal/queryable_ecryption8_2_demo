@@ -1,0 +1,22 @@
+-- Denodo VQL Script: Derived Views
+-- Creates derived views for search operations over base view
+
+CONNECT DATABASE poc_integration;
+
+-- Phone search view - exact match
+CREATE OR REPLACE VIEW phone_search AS
+SELECT id as customer_id, full_name, email, phone, tier, address, preferences,
+       loyalty_points, lifetime_value, last_purchase_date, created_at, updated_at
+FROM bv_alloydb_customers;
+
+-- Email prefix search view - LIKE search
+CREATE OR REPLACE VIEW email_prefix_search AS
+SELECT id as customer_id, full_name, email, phone, tier, address, preferences,
+       loyalty_points, lifetime_value, last_purchase_date, created_at, updated_at
+FROM bv_alloydb_customers;
+
+-- Name substring search view - LIKE search with wildcards
+CREATE OR REPLACE VIEW name_substring_search AS
+SELECT id as customer_id, full_name, email, phone, tier, address, preferences,
+       loyalty_points, lifetime_value, last_purchase_date, created_at, updated_at
+FROM bv_alloydb_customers;

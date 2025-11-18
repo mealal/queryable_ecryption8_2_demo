@@ -23,7 +23,7 @@ import base64
 
 # MongoDB imports
 from pymongo import MongoClient
-from pymongo.encryption import ClientEncryption, Algorithm
+from pymongo.encryption import ClientEncryption, Algorithm, AutoEncryptionOpts
 from pymongo.encryption_options import TextOpts, SubstringOpts, PrefixOpts, SuffixOpts
 from bson.binary import Binary, STANDARD
 from bson.codec_options import CodecOptions
@@ -147,21 +147,9 @@ class DatabaseManager:
                 }
             }
 
-            # Connect to MongoDB
-            self.mongodb_client = MongoClient(MONGODB_URI)
-            self.mongodb_db = self.mongodb_client[MONGODB_DATABASE]
-            self.mongodb_collection = self.mongodb_db[MONGODB_COLLECTION]
-
-            # Setup client encryption
-            self.client_encryption = ClientEncryption(
-                kms_providers=kms_providers,
-                key_vault_namespace=KEY_VAULT_NAMESPACE,
-                key_vault_client=self.mongodb_client,
-                codec_options=CodecOptions()
-            )
-
-            # Load key IDs from key vault
-            key_vault = self.mongodb_client.get_database("encryption").get_collection("__keyVault")
+            # First, connect without encryption to load key IDs
+            temp_client = MongoClient(MONGODB_URI)
+            key_vault = temp_client.get_database("encryption").get_collection("__keyVault")
             raw_keys = {}
             for key_doc in key_vault.find():
                 if "keyAltNames" in key_doc and key_doc["keyAltNames"]:
@@ -178,7 +166,86 @@ class DatabaseManager:
                     # Keep original name if it doesn't match expected format
                     self.key_ids[full_key_name] = key_id
 
-            logger.info(f"MongoDB connected. Loaded {len(self.key_ids)} encryption keys.")
+            temp_client.close()
+
+            logger.info(f"Loaded {len(self.key_ids)} encryption keys")
+
+            # Configure encryptedFieldsMap for automatic encryption
+            encrypted_fields_map = {
+                "poc_database.customers": {
+                    "fields": [
+                        {
+                            "path": "searchable_name",
+                            "bsonType": "string",
+                            "keyId": self.key_ids["searchable_name"],
+                            "queries": [
+                                {
+                                    "queryType": "substringPreview",
+                                    "contention": 0,
+                                    "strMinQueryLength": 2,
+                                    "strMaxQueryLength": 10,
+                                    "strMaxLength": 60,
+                                    "caseSensitive": False,
+                                    "diacriticSensitive": False
+                                }
+                            ]
+                        },
+                        {
+                            "path": "searchable_email",
+                            "bsonType": "string",
+                            "keyId": self.key_ids["searchable_email"],
+                            "queries": [
+                                {
+                                    "queryType": "prefixPreview",
+                                    "contention": 0,
+                                    "strMinQueryLength": 3,
+                                    "strMaxQueryLength": 30,
+                                    "strMaxLength": 100,
+                                    "caseSensitive": False,
+                                    "diacriticSensitive": False
+                                }
+                            ]
+                        },
+                        {
+                            "path": "searchable_phone",
+                            "bsonType": "string",
+                            "keyId": self.key_ids["searchable_phone"],
+                            "queries": [{"queryType": "equality", "contention": 0}]
+                        },
+                        {
+                            "path": "metadata.category",
+                            "bsonType": "string",
+                            "keyId": self.key_ids["metadata_category"],
+                            "queries": [{"queryType": "equality", "contention": 0}]
+                        },
+                        {
+                            "path": "metadata.status",
+                            "bsonType": "string",
+                            "keyId": self.key_ids["metadata_status"],
+                            "queries": [{"queryType": "equality", "contention": 0}]
+                        }
+                    ]
+                }
+            }
+
+            # Configure automatic encryption options
+            auto_encryption_opts = AutoEncryptionOpts(
+                kms_providers=kms_providers,
+                key_vault_namespace=KEY_VAULT_NAMESPACE,
+                encrypted_fields_map=encrypted_fields_map,
+                crypt_shared_lib_path="/usr/local/lib/mongo_crypt/mongo_crypt_v1.so",
+                crypt_shared_lib_required=True
+            )
+
+            # Connect to MongoDB with automatic encryption
+            self.mongodb_client = MongoClient(
+                f"{MONGODB_URI}/?directConnection=true&w=1&readPreference=primary",
+                auto_encryption_opts=auto_encryption_opts
+            )
+            self.mongodb_db = self.mongodb_client[MONGODB_DATABASE]
+            self.mongodb_collection = self.mongodb_db[MONGODB_COLLECTION]
+
+            logger.info("MongoDB connected with automatic encryption")
             return True
 
         except Exception as e:
@@ -228,111 +295,172 @@ async def shutdown_event():
 # Helper Functions
 # =====================================================================
 
-def encrypt_search_term(value: str, field: str, query_type: str = "equality") -> Binary:
+def search_mongodb_preview(plaintext_value: str, field: str, query_type: str) -> tuple[List[str], float]:
     """
-    Encrypt a search term using MongoDB Queryable Encryption
+    Search MongoDB with preview query types (prefix, suffix, substring)
+    using automatic encryption
+
+    With automatic encryption, simply query with plaintext - the driver encrypts
+    automatically based on the field configuration. For preview queries on fields
+    configured with prefixPreview/suffixPreview/substringPreview, pass the search
+    value directly and MongoDB will match based on the configured query type.
 
     Args:
-        value: The plaintext value to encrypt
-        field: The field name (determines which key to use)
-        query_type: The type of query - "equality", "prefix", "suffix", or "substring"
-                    Note: prefix/suffix/substring are preview features in MongoDB 8.2
+        plaintext_value: Plaintext search value (full or partial)
+        field: Field name to search ("email" or "name")
+        query_type: Type of preview query ("prefix", "suffix", "substring")
 
     Returns:
-        Encrypted binary value
+        Tuple of (list of UUIDs, elapsed time in ms)
     """
-    # Validate query_type
-    valid_query_types = ["equality", "prefix", "suffix", "substring"]
-    if query_type not in valid_query_types:
-        raise ValueError(f"Invalid query_type: {query_type}. Must be one of {valid_query_types}")
+    start_time = time.time()
 
-    # Map to MongoDB preview query type names
-    query_type_map = {
-        "equality": "equality",
-        "prefix": "prefixPreview",
-        "suffix": "suffixPreview",
-        "substring": "substringPreview"
-    }
-    mongodb_query_type = query_type_map[query_type]
-
-    # Map field names to key names
-    field_key_map = {
+    # Map field names to MongoDB field names
+    field_map = {
         "email": "searchable_email",
-        "name": "searchable_name",
-        "phone": "searchable_phone",
-        "category": "metadata_category",
-        "status": "metadata_status"
+        "name": "searchable_name"
     }
 
-    key_name = field_key_map.get(field)
-    if not key_name:
-        raise ValueError(f"Unknown field: {field}")
+    mongo_field = field_map.get(field)
+    if not mongo_field:
+        raise ValueError(f"Preview queries not supported for field: {field}")
 
-    key_id = db_manager.key_ids.get(key_name)
-    if not key_id:
-        raise ValueError(f"Encryption key not found for field: {field}")
-
-    # Determine which algorithm to use based on query type
-    # Preview query types (prefix, suffix, substring) require TEXTPREVIEW algorithm
-    # Equality queries use INDEXED algorithm
-    if query_type in ["prefix", "suffix", "substring"]:
-        algorithm = Algorithm.TEXTPREVIEW
-        # Configure text options for preview query types - must specify the preview type
-        text_opts_kwargs = {
-            "case_sensitive": False,
-            "diacritic_sensitive": False
+    # Build MongoDB 8.2 preview query using $expr and encryption operators
+    # Reference: https://www.mongodb.com/docs/manual/core/queryable-encryption/qe-encrypted-queries/
+    if query_type == "prefix":
+        # Use $encStrStartsWith for prefix queries
+        query = {
+            "$expr": {
+                "$encStrStartsWith": {
+                    "input": f"${mongo_field}",
+                    "prefix": plaintext_value
+                }
+            }
         }
-        # Add the specific preview type parameter (requires Opts objects, not bool)
-        # Parameters must match the schema configuration
-        if query_type == "prefix":
-            text_opts_kwargs["prefix"] = PrefixOpts(
-                strMinQueryLength=1,     # Min prefix query length
-                strMaxQueryLength=50     # Max prefix query length (realistic for email search)
-            )
-        elif query_type == "suffix":
-            text_opts_kwargs["suffix"] = SuffixOpts(
-                strMinQueryLength=1,
-                strMaxQueryLength=50
-            )
-        elif query_type == "substring":
-            text_opts_kwargs["substring"] = SubstringOpts(
-                strMinQueryLength=2,    # Min substring query length
-                strMaxQueryLength=10,   # Max substring query length
-                strMaxLength=60         # Max field value length
-            )
-
-        text_opts = TextOpts(**text_opts_kwargs)
+    elif query_type == "substring":
+        # Use $encStrContains for substring queries
+        query = {
+            "$expr": {
+                "$encStrContains": {
+                    "input": f"${mongo_field}",
+                    "substring": plaintext_value
+                }
+            }
+        }
     else:
-        algorithm = Algorithm.INDEXED
-        text_opts = None
+        raise ValueError(f"Unsupported query type: {query_type}")
 
-    # Encrypt the value with specified query type
-    if text_opts:
-        encrypted_value = db_manager.client_encryption.encrypt(
-            value,
-            algorithm,
-            key_id=key_id,
-            contention_factor=0,
-            query_type=mongodb_query_type,
-            text_opts=text_opts
-        )
-    else:
-        encrypted_value = db_manager.client_encryption.encrypt(
-            value,
-            algorithm,
-            key_id=key_id,
-            contention_factor=0,
-            query_type=mongodb_query_type
-        )
+    results = list(db_manager.mongodb_collection.find(query, {"alloy_record_id": 1}))
 
-    return encrypted_value
+    # Extract UUIDs
+    uuids = [doc.get("alloy_record_id") for doc in results if "alloy_record_id" in doc]
 
-def search_mongodb(encrypted_value: Binary, field: str) -> List[str]:
+    elapsed_ms = (time.time() - start_time) * 1000
+    logger.info(f"MongoDB preview search ({query_type}) completed in {elapsed_ms:.2f}ms. Found {len(uuids)} results.")
+
+    return uuids, elapsed_ms
+
+def fetch_and_decrypt_from_mongodb_preview(plaintext_value: str, field: str, query_type: str) -> tuple[List[Dict], float]:
     """
-    Search MongoDB encrypted collection
+    Fetch customer data from MongoDB with preview query and automatic decryption
+
+    With automatic encryption, query with plaintext and MongoDB automatically
+    decrypts the results based on the encryptedFieldsMap configuration.
 
     Args:
-        encrypted_value: Encrypted search value
+        plaintext_value: Plaintext search value (full or partial)
+        field: Field name ("email" or "name")
+        query_type: Preview query type ("prefix", "suffix", "substring")
+
+    Returns:
+        Tuple of (customer data list, elapsed time in ms)
+    """
+    start_time = time.time()
+
+    # Map field names to MongoDB field names
+    field_map = {
+        "email": "searchable_email",
+        "name": "searchable_name"
+    }
+
+    mongo_field = field_map.get(field)
+    if not mongo_field:
+        raise ValueError(f"Preview queries not supported for field: {field}")
+
+    # Build MongoDB 8.2 preview query using $expr and encryption operators
+    # Reference: https://www.mongodb.com/docs/manual/core/queryable-encryption/qe-encrypted-queries/
+    if query_type == "prefix":
+        # Use $encStrStartsWith for prefix queries
+        query = {
+            "$expr": {
+                "$encStrStartsWith": {
+                    "input": f"${mongo_field}",
+                    "prefix": plaintext_value
+                }
+            }
+        }
+    elif query_type == "substring":
+        # Use $encStrContains for substring queries
+        query = {
+            "$expr": {
+                "$encStrContains": {
+                    "input": f"${mongo_field}",
+                    "substring": plaintext_value
+                }
+            }
+        }
+    else:
+        raise ValueError(f"Unsupported query type: {query_type}")
+
+    # Execute query with automatic encryption/decryption
+    results = list(db_manager.mongodb_collection.find(query))
+
+    # Extract customer data - fields are automatically decrypted
+    customers = []
+    for doc in results:
+        try:
+            address = doc.get("address")
+            if isinstance(address, str):
+                try:
+                    address = json.loads(address)
+                except json.JSONDecodeError:
+                    address = {}
+
+            preferences = doc.get("preferences")
+            if isinstance(preferences, str):
+                try:
+                    preferences = json.loads(preferences)
+                except json.JSONDecodeError:
+                    preferences = {}
+
+            customer = {
+                "customer_id": doc.get("alloy_record_id"),
+                "full_name": doc.get("searchable_name"),
+                "email": doc.get("searchable_email"),
+                "phone": doc.get("searchable_phone"),
+                "address": address,
+                "preferences": preferences,
+                "tier": doc.get("metadata", {}).get("tier"),
+                "loyalty_points": doc.get("metadata", {}).get("loyalty_points", 0),
+                "last_purchase_date": doc.get("metadata", {}).get("last_purchase_date"),
+                "lifetime_value": float(doc.get("metadata", {}).get("lifetime_value", 0.0))
+            }
+            customers.append(customer)
+        except Exception as e:
+            logger.error(f"Failed to process document: {e}")
+            continue
+
+    elapsed_ms = (time.time() - start_time) * 1000
+    logger.info(f"MongoDB preview fetch ({query_type}) completed in {elapsed_ms:.2f}ms. Retrieved {len(customers)} records.")
+
+    return customers, elapsed_ms
+
+def search_mongodb(plaintext_value: str, field: str) -> List[str]:
+    """
+    Search MongoDB encrypted collection using automatic encryption
+
+    Args:
+        plaintext_value: Plaintext search value (driver will encrypt automatically)
         field: Field name to search
 
     Returns:
@@ -351,8 +479,8 @@ def search_mongodb(encrypted_value: Binary, field: str) -> List[str]:
 
     mongo_field = field_map.get(field, field)
 
-    # Query MongoDB
-    query = {mongo_field: encrypted_value}
+    # Query MongoDB with plaintext - driver encrypts automatically
+    query = {mongo_field: plaintext_value}
     results = list(db_manager.mongodb_collection.find(query, {"alloy_record_id": 1}))
 
     # Extract UUIDs
@@ -420,16 +548,16 @@ def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
 
     return customers, elapsed_ms
 
-def fetch_and_decrypt_from_mongodb(encrypted_value: Binary, field: str) -> tuple[List[Dict], float]:
+def fetch_and_decrypt_from_mongodb(plaintext_value: str, field: str) -> tuple[List[Dict], float]:
     """
-    Fetch and decrypt ALL customer data directly from MongoDB (MongoDB-only mode)
+    Fetch customer data directly from MongoDB with automatic decryption (MongoDB-only mode)
 
     Args:
-        encrypted_value: Encrypted search value
+        plaintext_value: Plaintext search value (driver will encrypt automatically)
         field: Field name to search (searchable_name, searchable_email, searchable_phone, etc.)
 
     Returns:
-        Tuple of (decrypted customer data list, elapsed time in ms)
+        Tuple of (customer data list, elapsed time in ms)
     """
     start_time = time.time()
 
@@ -444,34 +572,51 @@ def fetch_and_decrypt_from_mongodb(encrypted_value: Binary, field: str) -> tuple
 
     mongo_field = field_map.get(field, field)
 
-    # Query MongoDB
-    query = {mongo_field: encrypted_value}
+    # Query MongoDB with plaintext - driver encrypts automatically
+    query = {mongo_field: plaintext_value}
     results = list(db_manager.mongodb_collection.find(query))
 
-    # Decrypt all fields from each document
+    # Extract customer data - fields are automatically decrypted by driver
     customers = []
     for doc in results:
         try:
-            # Decrypt all encrypted fields
+            # Parse address and preferences if they're strings
+            address = doc.get("address")
+            if isinstance(address, str):
+                try:
+                    address = json.loads(address)
+                except json.JSONDecodeError:
+                    address = {}
+
+            preferences = doc.get("preferences")
+            if isinstance(preferences, str):
+                try:
+                    preferences = json.loads(preferences)
+                except json.JSONDecodeError:
+                    preferences = {}
+
             customer = {
                 "customer_id": doc.get("alloy_record_id"),
-                "full_name": db_manager.client_encryption.decrypt(doc["full_name"]) if "full_name" in doc else None,
-                "email": db_manager.client_encryption.decrypt(doc["email"]) if "email" in doc else None,
-                "phone": db_manager.client_encryption.decrypt(doc["phone"]) if "phone" in doc else None,
-                "address": json.loads(db_manager.client_encryption.decrypt(doc["address"])) if "address" in doc else None,
-                "preferences": json.loads(db_manager.client_encryption.decrypt(doc["preferences"])) if "preferences" in doc else None,
-                "tier": db_manager.client_encryption.decrypt(doc["metadata"]["tier"]) if doc.get("metadata", {}).get("tier") else None,
-                "loyalty_points": int(db_manager.client_encryption.decrypt(doc["metadata"]["loyalty_points"])) if doc.get("metadata", {}).get("loyalty_points") else 0,
-                "last_purchase_date": db_manager.client_encryption.decrypt(doc["metadata"]["last_purchase_date"]) if doc.get("metadata", {}).get("last_purchase_date") else None,
-                "lifetime_value": float(db_manager.client_encryption.decrypt(doc["metadata"]["lifetime_value"])) if doc.get("metadata", {}).get("lifetime_value") else 0.0
+                # Searchable fields are automatically decrypted
+                "full_name": doc.get("searchable_name"),
+                "email": doc.get("searchable_email"),
+                "phone": doc.get("searchable_phone"),
+                # Non-sensitive fields
+                "address": address,
+                "preferences": preferences,
+                # Metadata fields
+                "tier": doc.get("metadata", {}).get("tier"),
+                "loyalty_points": doc.get("metadata", {}).get("loyalty_points", 0),
+                "last_purchase_date": doc.get("metadata", {}).get("last_purchase_date"),
+                "lifetime_value": float(doc.get("metadata", {}).get("lifetime_value", 0.0))
             }
             customers.append(customer)
         except Exception as e:
-            logger.error(f"Failed to decrypt document: {e}")
+            logger.error(f"Failed to process document: {e}")
             continue
 
     elapsed_ms = (time.time() - start_time) * 1000
-    logger.info(f"MongoDB decrypt completed in {elapsed_ms:.2f}ms. Decrypted {len(customers)} records.")
+    logger.info(f"MongoDB fetch completed in {elapsed_ms:.2f}ms. Retrieved {len(customers)} records.")
 
     return customers, elapsed_ms
 
@@ -549,13 +694,12 @@ async def search_by_email(
     request_start = time.time()
 
     try:
-        # Step 1: Encrypt search term
+        # Search with plaintext - driver handles encryption automatically
         logger.info(f"Searching for email: {email} (mode: {mode})")
-        encrypted_email = encrypt_search_term(email, "email")
 
-        # MongoDB-only mode: decrypt all fields from MongoDB
+        # MongoDB-only mode: fetch all fields from MongoDB
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_email, "email")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(email, "email")
 
             if not customers:
                 return SearchResponse(
@@ -563,7 +707,7 @@ async def search_by_email(
                     data=[],
                     metrics=PerformanceMetrics(
                         mongodb_search_ms=0.0,
-                        mongodb_decrypt_ms=decrypt_time,
+                        mongodb_decrypt_ms=fetch_time,
                         alloydb_fetch_ms=0.0,
                         total_ms=(time.time() - request_start) * 1000,
                         results_count=0,
@@ -577,7 +721,7 @@ async def search_by_email(
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -587,8 +731,8 @@ async def search_by_email(
             )
 
         # Hybrid mode (default): MongoDB search + AlloyDB fetch
-        # Step 2: Search MongoDB
-        uuids, mongodb_time = search_mongodb(encrypted_email, "email")
+        # Search MongoDB with plaintext
+        uuids, mongodb_time = search_mongodb(email, "email")
 
         if not uuids:
             return SearchResponse(
@@ -639,17 +783,16 @@ async def search_by_name(
 
     try:
         logger.info(f"Searching for name: {name} (mode: {mode})")
-        encrypted_name = encrypt_search_term(name, "name")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_name, "name")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(name, "name")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -659,7 +802,7 @@ async def search_by_name(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_name, "name")
+        uuids, mongodb_time = search_mongodb(name, "name")
 
         if not uuids:
             return SearchResponse(
@@ -707,17 +850,16 @@ async def search_by_phone(
 
     try:
         logger.info(f"Searching for phone: {phone} (mode: {mode})")
-        encrypted_phone = encrypt_search_term(phone, "phone")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_phone, "phone")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(phone, "phone")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -727,7 +869,7 @@ async def search_by_phone(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_phone, "phone")
+        uuids, mongodb_time = search_mongodb(phone, "phone")
 
         if not uuids:
             return SearchResponse(
@@ -770,22 +912,21 @@ async def search_by_category(
     category: str = Query(..., description="Customer category to search"),
     mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
 ):
-    """Search customers by category (encrypted search)"""
+    """Search customers by category (plaintext metadata field - not encrypted)"""
     request_start = time.time()
 
     try:
         logger.info(f"Searching for category: {category} (mode: {mode})")
-        encrypted_category = encrypt_search_term(category, "category")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_category, "category")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(category, "category")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -795,7 +936,7 @@ async def search_by_category(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_category, "category")
+        uuids, mongodb_time = search_mongodb(category, "category")
 
         if not uuids:
             return SearchResponse(
@@ -838,22 +979,21 @@ async def search_by_status(
     status: str = Query(..., description="Customer status to search"),
     mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
 ):
-    """Search customers by status (encrypted search)"""
+    """Search customers by status (plaintext metadata field - not encrypted)"""
     request_start = time.time()
 
     try:
         logger.info(f"Searching for status: {status} (mode: {mode})")
-        encrypted_status = encrypt_search_term(status, "status")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_status, "status")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(status, "status")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -863,7 +1003,7 @@ async def search_by_status(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_status, "status")
+        uuids, mongodb_time = search_mongodb(status, "status")
 
         if not uuids:
             return SearchResponse(
@@ -913,7 +1053,7 @@ async def search_by_email_prefix(
     """
     Search customers by email prefix (encrypted prefix search)
 
-    Preview Feature: Uses MongoDB 8.2 prefixPreview query type
+    Preview Feature: Uses MongoDB 8.2 prefixPreview query type with automatic encryption
     Note: This is a preview feature and should not be used in production
 
     Example: prefix="john" will match "john@example.com", "john.doe@test.com", etc.
@@ -922,17 +1062,16 @@ async def search_by_email_prefix(
 
     try:
         logger.info(f"Searching for email prefix: {prefix} (mode: {mode})")
-        encrypted_value = encrypt_search_term(prefix, "email", query_type="prefix")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_value, "email")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(prefix, "email", "prefix")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -942,7 +1081,7 @@ async def search_by_email_prefix(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_value, "email")
+        uuids, mongodb_time = search_mongodb_preview(prefix, "email", "prefix")
 
         if not uuids:
             return SearchResponse(
@@ -988,7 +1127,7 @@ async def search_by_email_suffix(
     """
     Search customers by email suffix (encrypted suffix search)
 
-    Preview Feature: Uses MongoDB 8.2 suffixPreview query type
+    Preview Feature: Uses MongoDB 8.2 suffixPreview query type with automatic encryption
     Note: This is a preview feature and should not be used in production
 
     Example: suffix="example.com" will match emails ending with "example.com"
@@ -997,17 +1136,16 @@ async def search_by_email_suffix(
 
     try:
         logger.info(f"Searching for email suffix: {suffix} (mode: {mode})")
-        encrypted_value = encrypt_search_term(suffix, "email", query_type="suffix")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_value, "email")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(suffix, "email", "suffix")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -1017,7 +1155,7 @@ async def search_by_email_suffix(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_value, "email")
+        uuids, mongodb_time = search_mongodb_preview(suffix, "email", "suffix")
 
         if not uuids:
             return SearchResponse(
@@ -1063,7 +1201,7 @@ async def search_by_email_substring(
     """
     Search customers by email substring (encrypted substring search)
 
-    Preview Feature: Uses MongoDB 8.2 substringPreview query type
+    Preview Feature: Uses MongoDB 8.2 substringPreview query type with automatic encryption
     Note: This is a preview feature and should not be used in production
 
     Example: substring="doe" will match "john.doe@example.com", "jane.doe@test.com", etc.
@@ -1076,17 +1214,16 @@ async def search_by_email_substring(
 
     try:
         logger.info(f"Searching for email substring: {substring} (mode: {mode})")
-        encrypted_value = encrypt_search_term(substring, "email", query_type="substring")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_value, "email")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(substring, "email", "substring")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -1096,7 +1233,7 @@ async def search_by_email_substring(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_value, "email")
+        uuids, mongodb_time = search_mongodb_preview(substring, "email", "substring")
 
         if not uuids:
             return SearchResponse(
@@ -1142,7 +1279,7 @@ async def search_by_name_prefix(
     """
     Search customers by name prefix (encrypted prefix search)
 
-    Preview Feature: Uses MongoDB 8.2 prefixPreview query type
+    Preview Feature: Uses MongoDB 8.2 prefixPreview query type with automatic encryption
     Note: This is a preview feature and should not be used in production
 
     Example: prefix="John" will match "John Doe", "John Smith", etc.
@@ -1151,17 +1288,16 @@ async def search_by_name_prefix(
 
     try:
         logger.info(f"Searching for name prefix: {prefix} (mode: {mode})")
-        encrypted_value = encrypt_search_term(prefix, "name", query_type="prefix")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_value, "name")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(prefix, "name", "prefix")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -1171,7 +1307,7 @@ async def search_by_name_prefix(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_value, "name")
+        uuids, mongodb_time = search_mongodb_preview(prefix, "name", "prefix")
 
         if not uuids:
             return SearchResponse(
@@ -1217,7 +1353,7 @@ async def search_by_name_suffix(
     """
     Search customers by name suffix (encrypted suffix search)
 
-    Preview Feature: Uses MongoDB 8.2 suffixPreview query type
+    Preview Feature: Uses MongoDB 8.2 suffixPreview query type with automatic encryption
     Note: This is a preview feature and should not be used in production
 
     Example: suffix="Smith" will match "John Smith", "Jane Smith", etc.
@@ -1226,17 +1362,16 @@ async def search_by_name_suffix(
 
     try:
         logger.info(f"Searching for name suffix: {suffix} (mode: {mode})")
-        encrypted_value = encrypt_search_term(suffix, "name", query_type="suffix")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_value, "name")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(suffix, "name", "suffix")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -1246,7 +1381,7 @@ async def search_by_name_suffix(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_value, "name")
+        uuids, mongodb_time = search_mongodb_preview(suffix, "name", "suffix")
 
         if not uuids:
             return SearchResponse(
@@ -1292,7 +1427,7 @@ async def search_by_name_substring(
     """
     Search customers by name substring (encrypted substring search)
 
-    Preview Feature: Uses MongoDB 8.2 substringPreview query type
+    Preview Feature: Uses MongoDB 8.2 substringPreview query type with automatic encryption
     Note: This is a preview feature and should not be used in production
 
     Example: substring="mit" will match "John Smith", "Smith Johnson", etc.
@@ -1305,17 +1440,16 @@ async def search_by_name_substring(
 
     try:
         logger.info(f"Searching for name substring: {substring} (mode: {mode})")
-        encrypted_value = encrypt_search_term(substring, "name", query_type="substring")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, decrypt_time = fetch_and_decrypt_from_mongodb(encrypted_value, "name")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(substring, "name", "substring")
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
                 metrics=PerformanceMetrics(
                     mongodb_search_ms=0.0,
-                    mongodb_decrypt_ms=decrypt_time,
+                    mongodb_decrypt_ms=fetch_time,
                     alloydb_fetch_ms=0.0,
                     total_ms=(time.time() - request_start) * 1000,
                     results_count=len(customers),
@@ -1325,7 +1459,7 @@ async def search_by_name_substring(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(encrypted_value, "name")
+        uuids, mongodb_time = search_mongodb_preview(substring, "name", "substring")
 
         if not uuids:
             return SearchResponse(

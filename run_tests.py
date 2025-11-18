@@ -20,6 +20,15 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 import statistics
 
+# Import Denodo wrapper
+try:
+    from denodo.denodo_wrapper import DenodoClient, format_denodo_response, license_limiter
+    DENODO_AVAILABLE = True
+except ImportError:
+    DENODO_AVAILABLE = False
+    license_limiter = None
+    print("Warning: Denodo wrapper not found. Denodo tests will be skipped.")
+
 # ANSI color codes
 class Colors:
     HEADER = '\033[95m'
@@ -33,12 +42,25 @@ class Colors:
 
 # Test configuration
 API_BASE_URL = "http://localhost:8000"
+DENODO_CLIENT = DenodoClient() if DENODO_AVAILABLE else None
 
-# Fetch real test data from database
+# Test modes: hybrid, mongodb_only, denodo
+TEST_MODES = ["hybrid", "mongodb_only"]
+if DENODO_AVAILABLE:
+    TEST_MODES.append("denodo")
+
+# Fetch real test data from API
 def get_test_data():
-    """Fetch a real customer from the database for testing"""
-    import psycopg2
+    """Fetch real customer values from API for testing
+
+    This is NOT part of performance testing - it's just to get valid test data.
+    We fetch a few customers from the API and extract searchable field values.
+    """
     try:
+        # Fetch some customers from AlloyDB to get real values
+        # Using AlloyDB endpoint to get unencrypted data for test setup
+        # Note: category and status are MongoDB-only fields (in metadata), not in AlloyDB
+        import psycopg2
         conn = psycopg2.connect(
             host="localhost",
             port=5432,
@@ -48,8 +70,9 @@ def get_test_data():
         )
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, full_name, email, phone, tier
+            SELECT id, full_name, email, phone, tier, category, status
             FROM customers
+            ORDER BY RANDOM()
             LIMIT 1
         """)
         row = cursor.fetchone()
@@ -62,10 +85,12 @@ def get_test_data():
                 "name": row[1],
                 "email": row[2],
                 "phone": row[3],
-                "tier": row[4] or "gold"
+                "tier": row[4] or "gold",
+                "category": row[5],
+                "status": row[6]
             }
     except Exception as e:
-        print(f"Warning: Could not fetch test data: {e}")
+        print(f"Warning: Could not fetch test data from database: {e}")
         return None
 
 # Try to get real test data, otherwise use defaults
@@ -76,6 +101,8 @@ if _test_data:
     TEST_EMAIL = _test_data["email"]
     TEST_PHONE = _test_data["phone"]
     TEST_TIER = _test_data["tier"]
+    TEST_CATEGORY = _test_data["category"]
+    TEST_STATUS = _test_data["status"]
 else:
     # Fallback to defaults
     TEST_EMAIL = "richard.martin1@example.com"
@@ -83,6 +110,8 @@ else:
     TEST_PHONE = "+1-555-2879"
     TEST_CUSTOMER_ID = "3c05f00d-3161-4d2c-83c0-5208b2fa2be4"
     TEST_TIER = "gold"
+    TEST_CATEGORY = "retail"  # Options: retail, enterprise, government
+    TEST_STATUS = "active"    # Options: active, inactive, pending
 
 class TestMetrics:
     """Track test metrics in real-time"""
@@ -153,6 +182,9 @@ def print_error(text):
 def print_info(text):
     print(f"{Colors.OKCYAN}[INFO] {text}{Colors.ENDC}")
 
+def print_warning(text):
+    print(f"{Colors.WARNING}[WARN] {text}{Colors.ENDC}")
+
 def print_metric(label, value, unit=""):
     """Print real-time metric"""
     print(f"  {Colors.OKCYAN}{label:.<40} {value:>10.2f} {unit}{Colors.ENDC}")
@@ -188,7 +220,7 @@ def validate_customer_response(customer, mode="hybrid"):
         if not isinstance(customer["address"], dict):
             print_error(f"Address is not an object: {type(customer['address'])}")
             return False
-        address_fields = ["street", "city", "state", "zip"]
+        address_fields = ["street", "city", "state", "zip_code"]
         for addr_field in address_fields:
             if addr_field not in customer["address"]:
                 missing_fields.append(f"address.{addr_field}")
@@ -283,22 +315,30 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid"):
                     # Validate customer response
                     if validate_customer_response(customer, mode):
                         print_success("Customer data validation passed")
+                        metrics.add_result(test_name, True, duration, {
+                            "customer": customer,
+                            "metrics": test_metrics,
+                            "mode": mode
+                        })
                     else:
                         print_error("Customer data validation failed")
-
-                    metrics.add_result(test_name, True, duration, {
-                        "customer": customer,
-                        "metrics": test_metrics,
-                        "mode": mode
-                    })
+                        metrics.add_result(test_name, False, duration, {
+                            "customer": customer,
+                            "metrics": test_metrics,
+                            "mode": mode,
+                            "error": "Validation failed"
+                        })
+                        return False
                 else:
-                    print_success(f"Query executed successfully - Found {results_count} results")
+                    print_error(f"Query executed but returned 0 results - expected to find data")
                     print_metric("MongoDB Search", test_metrics['mongodb_search_ms'], "ms")
                     print_metric("Client Time", duration * 1000, "ms")
-                    metrics.add_result(test_name, True, duration, {
+                    metrics.add_result(test_name, False, duration, {
                         "metrics": test_metrics,
-                        "mode": mode
+                        "mode": mode,
+                        "error": "No results found"
                     })
+                    return False
 
                 metrics.add_performance_data(f"Encrypted {field.title()} Search ({mode})", test_metrics)
                 return True
@@ -347,12 +387,20 @@ def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid"):
                 else:
                     print_info(f"  MongoDB: {mongodb_time:.2f}ms | Total: {duration*1000:.2f}ms")
 
-                # Validate first customer if results exist
-                if data['data'] and validate_customer_response(data['data'][0], mode):
-                    print_success("Customer data validation passed")
+                # Validate first customer - require at least one result
+                if not data['data']:
+                    print_error(f"{test_name} - Found 0 results (expected data)")
+                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "No results"})
+                    return False
 
-                metrics.add_result(test_name, True, duration, {"mode": mode})
-                return True
+                if validate_customer_response(data['data'][0], mode):
+                    print_success("Customer data validation passed")
+                    metrics.add_result(test_name, True, duration, {"mode": mode})
+                    return True
+                else:
+                    print_error("Customer data validation failed")
+                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "Validation failed"})
+                    return False
             else:
                 print_error(f"{test_name} - API returned success=false")
                 metrics.add_result(test_name, False, duration)
@@ -398,12 +446,20 @@ def test_suffix_search(metrics, field, suffix, test_name, mode="hybrid"):
                 else:
                     print_info(f"  MongoDB: {mongodb_time:.2f}ms | Total: {duration*1000:.2f}ms")
 
-                # Validate first customer if results exist
-                if data['data'] and validate_customer_response(data['data'][0], mode):
-                    print_success("Customer data validation passed")
+                # Validate first customer - require at least one result
+                if not data['data']:
+                    print_error(f"{test_name} - Found 0 results (expected data)")
+                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "No results"})
+                    return False
 
-                metrics.add_result(test_name, True, duration, {"mode": mode})
-                return True
+                if validate_customer_response(data['data'][0], mode):
+                    print_success("Customer data validation passed")
+                    metrics.add_result(test_name, True, duration, {"mode": mode})
+                    return True
+                else:
+                    print_error("Customer data validation failed")
+                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "Validation failed"})
+                    return False
             else:
                 print_error(f"{test_name} - API returned success=false")
                 metrics.add_result(test_name, False, duration)
@@ -449,12 +505,20 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
                 else:
                     print_info(f"  MongoDB: {mongodb_time:.2f}ms | Total: {duration*1000:.2f}ms")
 
-                # Validate first customer if results exist
-                if data['data'] and validate_customer_response(data['data'][0], mode):
-                    print_success("Customer data validation passed")
+                # Validate first customer - require at least one result
+                if not data['data']:
+                    print_error(f"{test_name} - Found 0 results (expected data)")
+                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "No results"})
+                    return False
 
-                metrics.add_result(test_name, True, duration, {"mode": mode})
-                return True
+                if validate_customer_response(data['data'][0], mode):
+                    print_success("Customer data validation passed")
+                    metrics.add_result(test_name, True, duration, {"mode": mode})
+                    return True
+                else:
+                    print_error("Customer data validation failed")
+                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "Validation failed"})
+                    return False
             else:
                 print_error(f"{test_name} - API returned success=false")
                 metrics.add_result(test_name, False, duration)
@@ -468,6 +532,89 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
         duration = time.time() - start_time
         print_error(f"{test_name} - Exception: {str(e)}")
         metrics.add_result(test_name, False, duration)
+        return False
+
+
+def test_denodo_search(metrics, search_type, search_param, test_name, data_source="hybrid"):
+    """
+    Test Denodo search with license limitation tracking
+
+    Args:
+        metrics: Test metrics collector
+        search_type: Type of search (phone, email_prefix, etc.)
+        search_param: Search parameter value
+        test_name: Test name for reporting
+        data_source: Data source mode ('hybrid' = MongoDB search + AlloyDB data, 'mongodb' = MongoDB-only)
+    """
+    if not DENODO_AVAILABLE or not DENODO_CLIENT:
+        print_warning(f"Denodo not available - skipping {test_name}")
+        return False
+
+    print_test_start(test_name)
+
+    start = time.time()
+    try:
+        # Call appropriate Denodo search method with data_source parameter
+        # data_source: 'hybrid' = MongoDB search + AlloyDB data
+        #             'mongodb' = MongoDB search + decrypt (no AlloyDB)
+        if search_type == "email_prefix":
+            results, duration_ms, throttled = DENODO_CLIENT.search_by_email_prefix(search_param, data_source)
+        elif search_type == "name_substring":
+            results, duration_ms, throttled = DENODO_CLIENT.search_by_name_substring(search_param, data_source)
+        elif search_type == "phone":
+            results, duration_ms, throttled = DENODO_CLIENT.search_by_phone(search_param, data_source)
+        elif search_type == "category":
+            results, duration_ms, throttled = DENODO_CLIENT.search_by_category(search_param, data_source)
+        elif search_type == "status":
+            results, duration_ms, throttled = DENODO_CLIENT.search_by_status(search_param, data_source)
+        else:
+            print_error(f"Unknown search type: {search_type}")
+            return False
+
+        total_duration = time.time() - start
+        mode = f"denodo_{data_source}"
+
+        if throttled:
+            print_warning("Request throttled due to license limits (MaxSimultaneousRequests=3)")
+            metrics.add_result(test_name, False, total_duration, {"throttled": True, "mode": mode})
+            return False
+
+        if results:
+            customer = results[0] if isinstance(results, list) else results
+            print_success(f"Found customer: {customer.get('full_name', 'N/A')}")
+            print_metric("Denodo Query", duration_ms, "ms")
+            print_metric("Client Time", total_duration * 1000, "ms")
+            print_metric("Data Source", data_source.upper(), "")
+            print_info(f"License: {license_limiter.concurrent_requests}/{license_limiter.max_concurrent_reached} concurrent")
+
+            metrics.add_result(test_name, True, total_duration, {
+                "customer": customer,
+                "metrics": {
+                    "denodo_query_ms": duration_ms,
+                    "total_ms": duration_ms,
+                    "results_count": len(results) if isinstance(results, list) else 1,
+                    "mode": mode,
+                    "data_source": data_source
+                },
+                "mode": mode
+            })
+
+            metrics.add_performance_data(f"Denodo {search_type.replace('_', ' ').title()} ({data_source})", {
+                "denodo_query_ms": duration_ms,
+                "total_ms": duration_ms,
+                "mode": mode
+            })
+            return True
+        else:
+            print_error(f"No results found - endpoint may not exist or returned empty data")
+            metrics.add_result(test_name, False, total_duration, {"results": 0, "mode": mode})
+            return False
+
+    except Exception as e:
+        duration = time.time() - start
+        mode = f"denodo_{data_source}"
+        print_error(f"Denodo search failed: {e}")
+        metrics.add_result(test_name, False, duration, {"error": str(e), "mode": mode})
         return False
 
 
@@ -485,8 +632,8 @@ def run_performance_tests(metrics, iterations=10):
     base_tests = [
         # Equality searches (phone, category, status)
         ("Phone Equality Search", "search", "phone", "equality", "phone", TEST_PHONE),
-        ("Category Equality Search", "search", "category", "equality", "category", "premium"),
-        ("Status Equality Search", "search", "status", "equality", "status", "active"),
+        ("Category Equality Search", "search", "category", "equality", "category", TEST_CATEGORY),
+        ("Status Equality Search", "search", "status", "equality", "status", TEST_STATUS),
 
         # Prefix searches (email) - parameter name is always "prefix"
         ("Email Exact Match via Prefix", "search", "email", "prefix", "prefix", TEST_EMAIL),
@@ -611,6 +758,45 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
         </div>
         """
 
+    # Add Denodo license statistics
+    denodo_stats_html = ""
+    if DENODO_AVAILABLE and license_limiter:
+        license_stats = license_limiter.get_stats()
+        violation_class = "warning" if license_stats['license_violations'] > 0 else ""
+        denodo_stats_html = f"""
+        <div class="section">
+            <h2>⚖️ Denodo License Usage</h2>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Total Requests</div>
+                    <div class="metric-value">{license_stats['total_requests']}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Max Concurrent</div>
+                    <div class="metric-value">{license_stats['max_concurrent_requests']}/{license_stats['max_allowed_concurrent']}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Throttled Requests</div>
+                    <div class="metric-value">{license_stats['throttled_requests']}</div>
+                </div>
+                <div class="metric-card {violation_class}">
+                    <div class="metric-label">License Violations</div>
+                    <div class="metric-value">{license_stats['license_violations']}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Max Rows Per Query</div>
+                    <div class="metric-value">{license_stats['max_rows_per_query']:,}</div>
+                </div>
+            </div>
+            <div class="note">
+                <strong>Denodo Express License Limitations:</strong><br>
+                • MaxSimultaneousRequests: {license_stats['max_allowed_concurrent']}<br>
+                • MaxRowsPerQuery: {license_stats['max_rows_per_query']:,}<br>
+                • Expiration: 2026-12-01
+            </div>
+        </div>
+        """
+
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -690,6 +876,20 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
             color: #f44336;
             font-weight: bold;
         }}
+        .warning {{
+            background: #fff3cd !important;
+            border: 2px solid #ffc107;
+        }}
+        .warning .metric-value {{
+            color: #ff9800;
+        }}
+        .note {{
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-top: 20px;
+            font-size: 14px;
+        }}
         .perf-chart {{
             margin: 20px 0;
         }}
@@ -752,6 +952,8 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
             </div>
             {data_stats_html}
         </div>
+
+        {denodo_stats_html}
 
         <h2>Test Results</h2>
         <table>
@@ -908,7 +1110,7 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
 </html>
     """
 
-    with open(output_file, 'w') as f:
+    with open(output_file, 'w', encoding='utf-8') as f:
         f.write(html)
 
     print_success(f"Report generated: {output_file}")
@@ -969,6 +1171,41 @@ def validate_data_availability():
         print("  2. python generate_data.py --reset --count 10000")
         sys.exit(1)
 
+def check_denodo_endpoints():
+    """Check if Denodo REST endpoints are available"""
+    if not DENODO_AVAILABLE or not DENODO_CLIENT:
+        return False
+
+    print_header("Checking Denodo Endpoints")
+
+    try:
+        # Try a simple test query to verify endpoints exist
+        # Use a test phone that doesn't need to match actual data
+        test_results, test_duration, throttled = DENODO_CLIENT.search_by_phone("+1-555-0000", data_source="hybrid")
+
+        # If we get here without exception, endpoints exist (even if 0 results)
+        print_info(f"Denodo REST endpoints are accessible")
+        print_info(f"Test query completed in {test_duration:.2f}ms")
+        return True
+
+    except ValueError as e:
+        # 404 error - endpoints don't exist
+        print_error(f"Denodo endpoints not available: {e}")
+        print_info("")
+        print_info("Denodo data sources exist but REST views/services are not created.")
+        print_info("To create views and REST services:")
+        print_info("  1. Open http://localhost:9090 (admin/admin)")
+        print_info("  2. Navigate to 'poc_integration' database")
+        print_info("  3. Create base views and derived views")
+        print_info("  4. Create REST web services")
+        print_info("")
+        print_info("Or use VQL scripts to automate view creation.")
+        return False
+
+    except Exception as e:
+        print_error(f"Denodo check failed: {e}")
+        return False
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Run POC tests with real-time metrics")
@@ -989,6 +1226,11 @@ def main():
     else:
         data_stats = {"alloydb_count": 0, "encryption_keys": 0}
 
+    # Check if Denodo endpoints are available
+    denodo_endpoints_available = check_denodo_endpoints()
+    if not denodo_endpoints_available:
+        print_info("\nDenodo tests will be skipped - endpoints not available")
+
     metrics = TestMetrics()
     perf_results = {}
 
@@ -1005,10 +1247,10 @@ def main():
         test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (Hybrid)", "hybrid")
 
         # Test 3: Category Equality Search (Hybrid)
-        test_encrypted_search(metrics, "category", "premium", "Category Equality Search (Hybrid)", "hybrid")
+        test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (Hybrid)", "hybrid")
 
         # Test 4: Status Equality Search (Hybrid)
-        test_encrypted_search(metrics, "status", "active", "Status Equality Search (Hybrid)", "hybrid")
+        test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (Hybrid)", "hybrid")
 
         print_header("Equality Query Tests - MongoDB-Only Mode")
 
@@ -1016,10 +1258,10 @@ def main():
         test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (MongoDB-Only)", "mongodb_only")
 
         # Test 6: Category Equality Search (MongoDB-Only)
-        test_encrypted_search(metrics, "category", "premium", "Category Equality Search (MongoDB-Only)", "mongodb_only")
+        test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (MongoDB-Only)", "mongodb_only")
 
         # Test 7: Status Equality Search (MongoDB-Only)
-        test_encrypted_search(metrics, "status", "active", "Status Equality Search (MongoDB-Only)", "mongodb_only")
+        test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (MongoDB-Only)", "mongodb_only")
 
         print_header("Preview Feature Tests - Prefix Queries (Hybrid Mode)")
 
@@ -1058,6 +1300,57 @@ def main():
 
         # Test 17: Name Partial Search - MongoDB-Only
         test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (MongoDB-Only)", "mongodb_only")
+
+        # Denodo Mode Tests (if available)
+        if DENODO_AVAILABLE and denodo_endpoints_available:
+            print_header("Denodo Tests - Hybrid Mode")
+            print_info("Testing Denodo Hybrid: MongoDB encrypted search + AlloyDB data fetch")
+            print_warning(f"License Limits: MaxSimultaneousRequests={3}, MaxRowsPerQuery={10000}")
+
+            # Reset license limiter stats
+            license_limiter.reset()
+
+            # Test 18: Phone Search via Denodo-Hybrid
+            test_denodo_search(metrics, "phone", TEST_PHONE, "Phone Search (Denodo-Hybrid)", "hybrid")
+
+            # Test 19: Category Search via Denodo-Hybrid
+            test_denodo_search(metrics, "category", TEST_CATEGORY, "Category Search (Denodo-Hybrid)", "hybrid")
+
+            # Test 20: Status Search via Denodo-Hybrid
+            test_denodo_search(metrics, "status", TEST_STATUS, "Status Search (Denodo-Hybrid)", "hybrid")
+
+            # Test 21: Email Prefix Search via Denodo-Hybrid
+            test_denodo_search(metrics, "email_prefix", TEST_EMAIL.split('@')[0], "Email Prefix Search (Denodo-Hybrid)", "hybrid")
+
+            # Test 22: Name Substring Search via Denodo-Hybrid
+            test_denodo_search(metrics, "name_substring", TEST_NAME.split()[0], "Name Substring Search (Denodo-Hybrid)", "hybrid")
+
+            print_header("Denodo Tests - MongoDB-Only Mode")
+            print_info("Testing Denodo MongoDB-Only: MongoDB search + decrypt (no AlloyDB)")
+
+            # Test 23: Phone Search via Denodo-MongoDB
+            test_denodo_search(metrics, "phone", TEST_PHONE, "Phone Search (Denodo-MongoDB)", "mongodb")
+
+            # Test 24: Category Search via Denodo-MongoDB
+            test_denodo_search(metrics, "category", TEST_CATEGORY, "Category Search (Denodo-MongoDB)", "mongodb")
+
+            # Test 25: Status Search via Denodo-MongoDB
+            test_denodo_search(metrics, "status", TEST_STATUS, "Status Search (Denodo-MongoDB)", "mongodb")
+
+            # Test 26: Email Prefix Search via Denodo-MongoDB
+            test_denodo_search(metrics, "email_prefix", TEST_EMAIL.split('@')[0], "Email Prefix Search (Denodo-MongoDB)", "mongodb")
+
+            # Test 27: Name Substring Search via Denodo-MongoDB
+            test_denodo_search(metrics, "name_substring", TEST_NAME.split()[0], "Name Substring Search (Denodo-MongoDB)", "mongodb")
+
+            # Display license usage summary
+            license_stats = license_limiter.get_stats()
+            print()
+            print(f"{Colors.BOLD}Denodo License Usage:{Colors.ENDC}")
+            print(f"  Total Requests:       {license_stats['total_requests']}")
+            print(f"  Max Concurrent:       {license_stats['max_concurrent_requests']}/{license_stats['max_allowed_concurrent']}")
+            print(f"  Throttled Requests:   {license_stats['throttled_requests']}")
+            print(f"  License Violations:   {license_stats['license_violations']}")
 
     # Performance Tests
     if not args.quick:

@@ -86,6 +86,8 @@ coverage/
 .coverage
 htmlcov/
 .pytest_cache/
+test_report.html
+encryption-schema.json
 
 # Temporary files
 temp/

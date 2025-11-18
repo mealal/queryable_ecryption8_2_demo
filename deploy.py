@@ -170,6 +170,56 @@ def check_prerequisites():
 
     print_success("\nAll prerequisites satisfied")
 
+def pull_denodo_image():
+    """Pull Denodo Express image from Harbor registry"""
+    print_header("Pulling Denodo Image")
+
+    # Denodo image with SHA256 digest for exact version
+    denodo_image = "harbor.open.denodo.com/denodo-express/denodo-platform@sha256:7e10101863621ed0656e525ec9463a487be867bc6a3a12b09293153929e3bb54"
+
+    print_info("Checking if Denodo image is available...")
+
+    # Check if image already exists
+    check_image = run_command(
+        f"docker images -q {denodo_image}",
+        check=False,
+        capture_output=True
+    )
+
+    if check_image and check_image.strip():
+        print_success("Denodo image already exists locally")
+        return True
+
+    print_info(f"Pulling Denodo image from Harbor registry...")
+    print_info("Image: harbor.open.denodo.com/denodo-express/denodo-platform")
+
+    # Try to pull the image
+    pull_result = run_command(
+        f"docker pull {denodo_image}",
+        check=False,
+        capture_output=True
+    )
+
+    if pull_result and ("Downloaded" in pull_result or "up to date" in pull_result or "Digest: sha256" in pull_result):
+        print_success("Denodo image pulled successfully")
+        return True
+    else:
+        print_warning("Failed to pull Denodo image")
+        print_warning("This may be due to:")
+        print_warning("  1. Not authenticated with Harbor registry")
+        print_warning("  2. Network connectivity issues")
+        print_warning("  3. Invalid credentials")
+        print()
+        print_info("To authenticate with Harbor:")
+        print_info("  1. Visit: https://harbor.open.denodo.com")
+        print_info("  2. Login and generate CLI secret from User Profile")
+        print_info("  3. Run: docker login harbor.open.denodo.com --username YOUR_USERNAME")
+        print_info("  4. Enter the CLI secret when prompted")
+        print()
+        print_info("Deployment will continue, but Denodo will not be available.")
+        print_info("See DENODO_DOCKER_SETUP.md for detailed instructions.")
+        return False
+
 def start_containers():
     """Start Docker containers"""
     print_header("Starting Docker Containers")
@@ -320,8 +370,8 @@ END
     print_success("Database users created")
 
 def setup_encryption():
-    """Setup MongoDB encryption"""
-    print_header("Setting Up MongoDB Encryption")
+    """Setup MongoDB encryption schema (no data generation)"""
+    print_header("Setting Up MongoDB Encryption Schema")
 
     # Clean up .encryption_key if it's a directory
     if os.path.exists('.encryption_key'):
@@ -366,13 +416,46 @@ def setup_encryption():
             else:
                 os.remove('.encryption_key')
 
-    print_info("Running encryption setup script...")
+    print_info("Running encryption setup script (schema only, no data)...")
 
     if run_command(f"{sys.executable} mongodb/setup-encryption.py"):
-        print_success("Encryption configured")
+        print_success("Encryption schema configured")
         return True
     else:
         print_error("Encryption setup failed")
+        return False
+
+def setup_alloydb_schema():
+    """Setup AlloyDB schema"""
+    print_header("Setting Up AlloyDB Schema")
+
+    print_info("Creating AlloyDB tables and indexes...")
+
+    # Apply schema from alloydb/schema.sql
+    schema_result = run_command(
+        "docker exec -i poc_alloydb psql -U postgres -d alloydb_poc < alloydb/schema.sql",
+        check=False,
+        capture_output=True
+    )
+
+    if schema_result or schema_result == "":  # Empty string means success with no output
+        print_success("AlloyDB schema created")
+        return True
+    else:
+        print_error("Failed to create AlloyDB schema")
+        return False
+
+def generate_initial_data(count=100):
+    """Generate initial test data using generate_data.py"""
+    print_header(f"Generating Initial Test Data ({count} records)")
+
+    print_info(f"Generating {count} customer records in both databases...")
+
+    if run_command(f"docker exec poc_api python api/generate_data.py --count {count}"):
+        print_success(f"Generated {count} initial customer records")
+        return True
+    else:
+        print_error("Data generation failed")
         return False
 
 def install_api_dependencies():
@@ -386,6 +469,60 @@ def install_api_dependencies():
         return True
     else:
         print_error("Failed to install dependencies")
+        return False
+
+def init_denodo():
+    """Initialize Denodo with VQL scripts"""
+    print_header("Initializing Denodo")
+
+    # Check if Denodo container is running
+    denodo_check = run_command(
+        "docker ps --filter name=poc_denodo --format '{{.Names}}'",
+        check=False,
+        capture_output=True
+    )
+
+    if not denodo_check or 'poc_denodo' not in denodo_check:
+        print_warning("Denodo container not running, skipping initialization")
+        return False
+
+    # Wait for Denodo to be ready
+    print_info("Waiting for Denodo to be ready (this may take 2-3 minutes)...")
+    max_wait = 40  # Denodo takes longer to start
+    denodo_ready = False
+
+    for i in range(max_wait):
+        denodo_ping = run_command(
+            "curl -s -u admin:admin http://localhost:9090/denodo-restfulws/admin/ping",
+            check=False,
+            capture_output=True
+        )
+
+        if denodo_ping and ('ok' in denodo_ping.lower() or '200' in denodo_ping):
+            denodo_ready = True
+            print_success("Denodo is ready")
+            break
+
+        if i % 5 == 0:
+            print(f"  Waiting for Denodo... ({i+1}/{max_wait})")
+        time.sleep(3)
+
+    if not denodo_ready:
+        print_warning("Denodo not ready after waiting. VQL initialization skipped.")
+        print_info("You can manually initialize later with: python denodo/init_denodo.py")
+        return False
+
+    # Run Denodo initialization script inside the container
+    print_info("Executing VQL initialization scripts...")
+
+    if run_command("docker exec poc_denodo bash /opt/denodo/init_vql.sh"):
+        print_success("Denodo initialized successfully")
+        print_info("  REST API: http://localhost:9090/denodo-restfulws/poc_integration")
+        print_info("  Web Panel: http://localhost:9090")
+        return True
+    else:
+        print_warning("Denodo VQL initialization encountered issues")
+        print_info("You can retry with: docker exec poc_denodo bash /opt/denodo/init_vql.sh")
         return False
 
 def stop_containers():
@@ -460,9 +597,42 @@ def clean_deployment():
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
     print("  1. Start fresh deployment: python deploy.py start")
-    print("  2. Generate test data:     python generate_data.py --reset --count 10000")
-    print("  3. Run tests:              python run_tests.py")
+    print("  2. Run tests:              python run_tests.py")
     return True
+
+def generate_more_data():
+    """Generate additional test data"""
+    # Parse count from command line
+    count = 10000  # default
+    if len(sys.argv) > 2:
+        for i, arg in enumerate(sys.argv[2:], start=2):
+            if arg == '--count' and i + 1 < len(sys.argv):
+                try:
+                    count = int(sys.argv[i + 1])
+                except ValueError:
+                    print_error(f"Invalid count: {sys.argv[i + 1]}")
+                    sys.exit(1)
+
+    print_header(f"Generating Additional Test Data ({count} records)")
+
+    # Check deployment state
+    state = check_deployment_state()
+
+    if not state['api_running']:
+        print_error("API is not running. Start deployment first with: python deploy.py start")
+        sys.exit(1)
+
+    print_info(f"Generating {count} additional customer records...")
+
+    if run_command(f"docker exec poc_api python api/generate_data.py --count {count}"):
+        print_success(f"Generated {count} additional customer records")
+        print()
+        print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
+        print("  1. Run tests:        python run_tests.py")
+        print("  2. Check status:     python deploy.py status")
+    else:
+        print_error("Data generation failed")
+        sys.exit(1)
 
 def check_status():
     """Check status of all components"""
@@ -584,6 +754,9 @@ def deploy_all():
     # Check prerequisites
     check_prerequisites()
 
+    # Pull Denodo image (optional - won't fail deployment if unsuccessful)
+    pull_denodo_image()
+
     # Start containers if needed
     if not state['containers_running']:
         if not start_containers():
@@ -600,9 +773,14 @@ def deploy_all():
     # Create users (idempotent - will skip if already exist)
     create_database_users()
 
-    # Setup encryption (always call - function is idempotent and checks MongoDB key vault)
+    # Setup encryption schema (always call - function is idempotent and checks MongoDB key vault)
     if not setup_encryption():
         print_error("Deployment failed at encryption setup")
+        sys.exit(1)
+
+    # Setup AlloyDB schema
+    if not setup_alloydb_schema():
+        print_error("Deployment failed at AlloyDB schema setup")
         sys.exit(1)
 
     # Recreate API container to remount encryption key file
@@ -628,6 +806,16 @@ def deploy_all():
         if not api_ready:
             print_warning("API health check timed out, but continuing...")
 
+    # Generate initial test data (100 records)
+    if not state['data_exists']:
+        if not generate_initial_data(count=100):
+            print_warning("Initial data generation failed, but deployment can continue")
+    else:
+        print_info("Data already exists, skipping initial data generation")
+
+    # Initialize Denodo (optional - won't fail deployment if skipped)
+    init_denodo()
+
     # Final status
     print_header("Deployment Complete!")
 
@@ -638,23 +826,25 @@ def deploy_all():
     print("  • AlloyDB:  localhost:5432")
     print("  • API:      http://localhost:8000")
     print("  • API Docs: http://localhost:8000/docs")
+    print("  • Denodo:   http://localhost:9090 (if initialized)")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-    print("  1. Generate test data:  python generate_data.py --reset --count 10000")
-    print("  2. Run tests:           python run_tests.py")
-    print("  3. View test report:    Open test_report.html in browser (generated after tests)")
+    print("  1. Run tests:                python run_tests.py")
+    print("  2. Generate more data:       python deploy.py generate --count 10000")
+    print("  3. View test report:         Open test_report.html in browser (generated after tests)")
 
 def main():
     """Main entry point"""
     if len(sys.argv) < 2:
-        print("Usage: python deploy.py {start|stop|restart|status|clean}")
+        print("Usage: python deploy.py {start|stop|restart|status|clean|generate}")
         print()
         print("Commands:")
-        print("  start    - Deploy and start all components")
-        print("  stop     - Stop all components")
-        print("  restart  - Restart all components")
-        print("  status   - Check status of all components")
-        print("  clean    - Stop and remove all data (WARNING: destructive)")
+        print("  start              - Deploy and start all components")
+        print("  stop               - Stop all components")
+        print("  restart            - Restart all components")
+        print("  status             - Check status of all components")
+        print("  clean              - Stop and remove all data (WARNING: destructive)")
+        print("  generate [--count N] - Generate additional test data (default: 10000)")
         sys.exit(1)
 
     command = sys.argv[1].lower()
@@ -671,9 +861,11 @@ def main():
         check_status()
     elif command == 'clean':
         clean_deployment()
+    elif command == 'generate':
+        generate_more_data()
     else:
         print_error(f"Unknown command: {command}")
-        print("Valid commands: start, stop, restart, status, clean")
+        print("Valid commands: start, stop, restart, status, clean, generate")
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ CREATE TABLE customers (
     address JSONB,
     preferences JSONB,
     tier VARCHAR(50) DEFAULT 'gold',
+    category VARCHAR(50),
+    status VARCHAR(50),
     loyalty_points INTEGER DEFAULT 0,
     last_purchase_date VARCHAR(100),
     lifetime_value DECIMAL(12, 2) DEFAULT 0.00,
@@ -25,6 +27,8 @@ CREATE TABLE customers (
 CREATE INDEX idx_customers_email ON customers(email);
 CREATE INDEX idx_customers_phone ON customers(phone);
 CREATE INDEX idx_customers_tier ON customers(tier);
+CREATE INDEX idx_customers_category ON customers(category);
+CREATE INDEX idx_customers_status ON customers(status);
 CREATE INDEX idx_customers_created_at ON customers(created_at);
 
 -- Create GIN index for JSONB columns

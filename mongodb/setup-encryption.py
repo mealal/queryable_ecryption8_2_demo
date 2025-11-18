@@ -168,147 +168,6 @@ def create_encrypted_collection(db, encrypted_fields):
     print("Encrypted collection created with indexes")
 
 
-def insert_sample_data(encrypted_client, client_encryption, key_ids):
-    """Insert sample encrypted data using explicit encryption"""
-    print("Inserting sample encrypted data...")
-
-    db = encrypted_client[DATABASE_NAME]
-    collection = db[COLLECTION_NAME]
-
-    # Sample data (unencrypted)
-    raw_documents = [
-        {
-            "searchable_name": "John Doe",
-            "searchable_email": "john.doe@example.com",
-            "searchable_phone": "+1-555-0101",
-            "metadata": {
-                "category": "premium",
-                "status": "active",
-                "tags": ["vip", "long-term"]
-            },
-            "alloy_record_id": "550e8400-e29b-41d4-a716-446655440001",
-            "created_at": "2025-01-01T00:00:00Z"
-        },
-        {
-            "searchable_name": "Jane Smith",
-            "searchable_email": "jane.smith@example.com",
-            "searchable_phone": "+1-555-0102",
-            "metadata": {
-                "category": "standard",
-                "status": "active",
-                "tags": ["new"]
-            },
-            "alloy_record_id": "550e8400-e29b-41d4-a716-446655440002",
-            "created_at": "2025-01-02T00:00:00Z"
-        },
-        {
-            "searchable_name": "Bob Johnson",
-            "searchable_email": "bob.johnson@example.com",
-            "searchable_phone": "+1-555-0103",
-            "metadata": {
-                "category": "premium",
-                "status": "inactive",
-                "tags": ["dormant"]
-            },
-            "alloy_record_id": "550e8400-e29b-41d4-a716-446655440003",
-            "created_at": "2025-01-03T00:00:00Z"
-        }
-    ]
-
-    # Encrypt fields explicitly
-    encrypted_documents = []
-    for doc in raw_documents:
-        encrypted_doc = {
-            "searchable_name": client_encryption.encrypt(
-                doc["searchable_name"],
-                Algorithm.INDEXED,
-                key_id=key_ids["searchable_name"],
-                contention_factor=0
-            ),
-            "searchable_email": client_encryption.encrypt(
-                doc["searchable_email"],
-                Algorithm.INDEXED,
-                key_id=key_ids["searchable_email"],
-                contention_factor=0
-            ),
-            "searchable_phone": client_encryption.encrypt(
-                doc["searchable_phone"],
-                Algorithm.INDEXED,
-                key_id=key_ids["searchable_phone"],
-                contention_factor=0
-            ),
-            "metadata": {
-                "category": client_encryption.encrypt(
-                    doc["metadata"]["category"],
-                    Algorithm.INDEXED,
-                    key_id=key_ids["metadata_category"],
-                    contention_factor=0
-                ),
-                "status": client_encryption.encrypt(
-                    doc["metadata"]["status"],
-                    Algorithm.INDEXED,
-                    key_id=key_ids["metadata_status"],
-                    contention_factor=0
-                ),
-                "tags": doc["metadata"]["tags"]  # Not encrypted
-            },
-            "alloy_record_id": doc["alloy_record_id"],
-            "created_at": doc["created_at"]
-        }
-        encrypted_documents.append(encrypted_doc)
-
-    result = collection.insert_many(encrypted_documents)
-    print(f"Inserted {len(result.inserted_ids)} encrypted documents")
-
-    # Demonstrate queryable encryption
-    print("\nDemonstrating queryable encryption search:")
-
-    # Encrypt search values for querying
-    encrypted_email = client_encryption.encrypt(
-        "john.doe@example.com",
-        Algorithm.INDEXED,
-        key_id=key_ids["searchable_email"],
-        contention_factor=0,
-        query_type="equality"
-    )
-
-    # Search by encrypted field
-    results = collection.find({"searchable_email": encrypted_email})
-    for doc in results:
-        # Decrypt for display if still encrypted (Binary subtype 6)
-        name = doc['searchable_name']
-        if isinstance(name, Binary) and name.subtype == 6:
-            decrypted_name = client_encryption.decrypt(name)
-        else:
-            decrypted_name = name
-        print(f"Found: {decrypted_name} - AlloyDB ID: {doc['alloy_record_id']}")
-
-    # Search by category
-    encrypted_category = client_encryption.encrypt(
-        "premium",
-        Algorithm.INDEXED,
-        key_id=key_ids["metadata_category"],
-        contention_factor=0,
-        query_type="equality"
-    )
-    results = collection.find({"metadata.category": encrypted_category})
-    count = collection.count_documents({'metadata.category': encrypted_category})
-    print(f"\nPremium customers: {count}")
-
-    # Show that data is actually encrypted at rest
-    print("\n\nVerifying encryption at REST:")
-    print("=" * 60)
-    unencrypted_client = MongoClient(MONGODB_URI + "?directConnection=true")
-    unenc_coll = unencrypted_client[DATABASE_NAME][COLLECTION_NAME]
-    raw_doc = unenc_coll.find_one({"alloy_record_id": "550e8400-e29b-41d4-a716-446655440001"})
-    if raw_doc:
-        print(f"Raw encrypted searchable_name type: {type(raw_doc['searchable_name'])}")
-        print(f"Raw encrypted searchable_name subtype: {raw_doc['searchable_name'].subtype if isinstance(raw_doc['searchable_name'], Binary) else 'N/A'}")
-        print(f"Encrypted data IS BINARY - Cannot read without decryption key!")
-        print(f"Searchable_name (encrypted): {raw_doc['searchable_name'][:50]}...")
-    unencrypted_client.close()
-
-
 def main():
     """Main setup function"""
     print("=" * 60)
@@ -379,32 +238,15 @@ def main():
 
     create_encrypted_collection(db, encrypted_fields)
 
-    # Create encrypted client for data operations
-    # MongoDB 8.2+ uses Automatic Encryption Shared Library instead of mongocryptd
-    auto_encryption_opts = AutoEncryptionOpts(
-        KMS_PROVIDERS,
-        KEY_VAULT_NAMESPACE,
-        encrypted_fields_map=encrypted_fields_map,
-        bypass_query_analysis=True  # Bypass mongocryptd for MongoDB 8.2+
-    )
-
-    encrypted_client = MongoClient(
-        MONGODB_URI + "?directConnection=true",
-        auto_encryption_opts=auto_encryption_opts
-    )
-
-    # Insert sample data
-    insert_sample_data(encrypted_client, client_encryption, key_ids)
-
     print("\n" + "=" * 60)
     print("Setup completed successfully!")
     print("=" * 60)
     print(f"\nDatabase: {DATABASE_NAME}")
     print(f"Collection: {COLLECTION_NAME}")
     print(f"Key Vault: {KEY_VAULT_NAMESPACE}")
+    print("\nEncryption schema created. Use generate_data.py to populate with data.")
 
     setup_client.close()
-    encrypted_client.close()
 
 
 if __name__ == "__main__":
