@@ -509,20 +509,34 @@ def init_denodo():
 
     if not denodo_ready:
         print_warning("Denodo not ready after waiting. VQL initialization skipped.")
-        print_info("You can manually initialize later with: python denodo/init_denodo.py")
+        print_info("Denodo will be available but without views/REST services configured")
         return False
 
     # Run Denodo initialization script inside the container
     print_info("Executing VQL initialization scripts...")
 
-    if run_command("docker exec poc_denodo bash /opt/denodo/init_vql.sh"):
-        print_success("Denodo initialized successfully")
-        print_info("  REST API: http://localhost:9090/denodo-restfulws/poc_integration")
-        print_info("  Web Panel: http://localhost:9090")
-        return True
-    else:
-        print_warning("Denodo VQL initialization encountered issues")
-        print_info("You can retry with: docker exec poc_denodo bash /opt/denodo/init_vql.sh")
+    # Use Python subprocess to avoid Git Bash path conversion issues on Windows
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "poc_denodo", "bash", "/opt/denodo/init_vql.sh"],
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+
+        if result.returncode == 0:
+            print_success("Denodo initialized successfully")
+            print_info("  REST API: http://localhost:9090/denodo-restfulws/poc_integration")
+            print_info("  Web Panel: http://localhost:9090")
+            return True
+        else:
+            print_warning(f"Denodo VQL initialization failed: {result.stderr}")
+            print_info("Denodo will be available but without views/REST services configured")
+            return False
+    except Exception as e:
+        print_warning(f"Denodo VQL initialization encountered issues: {e}")
+        print_info("Denodo will be available but without views/REST services configured")
         return False
 
 def stop_containers():
