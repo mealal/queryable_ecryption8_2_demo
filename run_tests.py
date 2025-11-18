@@ -1141,7 +1141,7 @@ def validate_data_availability():
 
             if encryption_keys != 5:
                 print(f"\n{Colors.FAIL}ERROR: Expected 5 encryption keys, found {encryption_keys}{Colors.ENDC}")
-                print("Run: python generate_data.py --reset --count 10000")
+                print("Run: python deploy.py clean && python deploy.py start")
                 sys.exit(1)
         else:
             print(f"\n{Colors.FAIL}ERROR: API health check failed{Colors.ENDC}")
@@ -1150,7 +1150,7 @@ def validate_data_availability():
         # Validate minimum data count
         if mongodb_count < 100:
             print(f"\n{Colors.WARNING}WARNING: Only {mongodb_count} customers found (recommended: 10,000){Colors.ENDC}")
-            print("Run: python generate_data.py --reset --count 10000")
+            print("Run: python deploy.py generate --count 10000")
 
             response = input("\nContinue with limited data? (yes/no): ")
             if response.lower() != 'yes':
@@ -1168,7 +1168,7 @@ def validate_data_availability():
         print(f"\n{Colors.FAIL}ERROR: Data validation failed: {e}{Colors.ENDC}")
         print("\nMake sure services are running:")
         print("  1. python deploy.py start")
-        print("  2. python generate_data.py --reset --count 10000")
+        print("  2. python deploy.py generate --count 10000")
         sys.exit(1)
 
 def check_denodo_endpoints():
