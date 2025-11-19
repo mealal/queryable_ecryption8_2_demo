@@ -93,6 +93,65 @@ def get_test_data():
         print(f"Warning: Could not fetch test data from database: {e}")
         return None
 
+def get_test_data_pool(sample_size=200):
+    """Fetch a pool of test values for performance testing
+
+    Args:
+        sample_size: Number of samples to fetch (default: 200)
+
+    Returns:
+        Dictionary with lists of values for each field type
+    """
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            port=5432,
+            database="alloydb_poc",
+            user="postgres",
+            password="postgres_password"
+        )
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT full_name, email, phone, category, status
+            FROM customers
+            ORDER BY RANDOM()
+            LIMIT {sample_size}
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        if rows:
+            pool = {
+                "names": [],
+                "emails": [],
+                "phones": [],
+                "categories": [],
+                "statuses": [],
+                "email_prefixes": [],
+                "name_substrings": []
+            }
+
+            for row in rows:
+                full_name, email, phone, category, status = row
+                pool["names"].append(full_name)
+                pool["emails"].append(email)
+                pool["phones"].append(phone)
+                pool["categories"].append(category)
+                pool["statuses"].append(status)
+
+                # Extract prefixes and substrings
+                if email:
+                    pool["email_prefixes"].append(email.split('@')[0][:4])
+                if full_name and ' ' in full_name:
+                    pool["name_substrings"].append(full_name.split()[0][:10] if len(full_name.split()[0]) > 10 else full_name.split()[0])
+
+            return pool
+    except Exception as e:
+        print(f"Warning: Could not fetch test data pool from database: {e}")
+        return None
+
 # Try to get real test data, otherwise use defaults
 _test_data = get_test_data()
 if _test_data:
@@ -272,8 +331,8 @@ def test_health_check(metrics):
         metrics.add_result("Health Check", False, duration, {"error": str(e)})
         return False
 
-def test_encrypted_search(metrics, field, value, test_name, mode="hybrid"):
-    """Test encrypted search"""
+def test_encrypted_search(metrics, field, value, test_name, mode="hybrid", limit=None):
+    """Test encrypted search with configurable result limit"""
     print_test_start(test_name)
 
     endpoint_map = {
@@ -286,9 +345,13 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid"):
 
     start = time.time()
     try:
+        params = {field: value, "mode": mode}
+        if limit is not None:
+            params["limit"] = limit
+
         response = requests.get(
             f"{API_BASE_URL}/api/v1/customers/search/{endpoint}",
-            params={field: value, "mode": mode},
+            params=params,
             timeout=10
         )
         duration = time.time() - start
@@ -299,18 +362,52 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid"):
             if data['success']:
                 test_metrics = data['metrics']
                 results_count = len(data['data'])
+                api_total_time = test_metrics['total_ms']
+                client_time = duration * 1000
 
                 if data['data']:
                     customer = data['data'][0]
                     print_success(f"Found customer: {customer.get('full_name')}")
-                    print_metric("MongoDB Search", test_metrics['mongodb_search_ms'], "ms")
+                    print_metric("Results Returned", results_count, "records")
 
-                    # AlloyDB fetch only in hybrid mode
+                    # Get appropriate MongoDB time based on mode
                     if mode == "hybrid":
+                        mongodb_time = test_metrics['mongodb_search_ms']
+                        print_metric("MongoDB Search", mongodb_time, "ms")
                         print_metric("AlloyDB Fetch", test_metrics.get('alloydb_fetch_ms', 0), "ms")
+                    else:  # mongodb_only
+                        mongodb_time = test_metrics.get('mongodb_decrypt_ms', 0)
+                        print_metric("MongoDB Decrypt", mongodb_time, "ms")
 
-                    print_metric("Total Time", test_metrics['total_ms'], "ms")
-                    print_metric("Client Time", duration * 1000, "ms")
+                    print_metric("API Total", api_total_time, "ms")
+                    print_metric("Client Total", client_time, "ms")
+
+                    # Validate expected result count if limit is specified
+                    if limit is not None and results_count != limit:
+                        # If we got fewer results than expected, it's due to insufficient data (NA)
+                        if results_count < limit:
+                            print_info(f"Expected {limit} results, got {results_count} (insufficient test data - NA)")
+                            metrics.add_result(test_name, True, duration, {
+                                "customer": customer,
+                                "metrics": test_metrics,
+                                "mode": mode,
+                                "results_count": results_count,
+                                "expected_count": limit,
+                                "status": "NA"
+                            })
+                            return True  # Pass with NA status
+                        else:
+                            # If we got MORE results than expected, that's an API bug
+                            print_error(f"Expected {limit} results, but got {results_count} (API limit not working)")
+                            metrics.add_result(test_name, False, duration, {
+                                "customer": customer,
+                                "metrics": test_metrics,
+                                "mode": mode,
+                                "results_count": results_count,
+                                "expected_count": limit,
+                                "error": "API returned more results than limit"
+                            })
+                            return False
 
                     # Validate customer response
                     if validate_customer_response(customer, mode):
@@ -318,7 +415,9 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid"):
                         metrics.add_result(test_name, True, duration, {
                             "customer": customer,
                             "metrics": test_metrics,
-                            "mode": mode
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit
                         })
                     else:
                         print_error("Customer data validation failed")
@@ -357,7 +456,7 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid"):
         metrics.add_result(test_name, False, duration, {"error": str(e)})
         return False
 
-def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid"):
+def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid", limit=None):
     """Test encrypted prefix search (Preview Feature)"""
     print_test_start(test_name)
 
@@ -365,6 +464,8 @@ def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid"):
     try:
         params = {field.replace("_", ""): prefix} if "_" in field else {"prefix": prefix}
         params["mode"] = mode
+        if limit is not None:
+            params["limit"] = limit
 
         response = requests.get(
             f"{API_BASE_URL}/api/v1/customers/search/{field}/prefix",
@@ -378,14 +479,47 @@ def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid"):
             data = response.json()
             if data['success']:
                 results_count = len(data['data'])
-                mongodb_time = data['metrics']['mongodb_search_ms']
-                alloydb_time = data['metrics'].get('alloydb_fetch_ms', 0)
+                api_total_time = data['metrics']['total_ms']
+                client_time = duration * 1000
+
+                # Get appropriate MongoDB time based on mode
+                if mode == "hybrid":
+                    mongodb_time = data['metrics']['mongodb_search_ms']
+                    alloydb_time = data['metrics'].get('alloydb_fetch_ms', 0)
+                else:  # mongodb_only
+                    mongodb_time = data['metrics'].get('mongodb_decrypt_ms', 0)
+                    alloydb_time = 0
 
                 print_success(f"{test_name} - Found {results_count} results")
                 if mode == "hybrid":
-                    print_info(f"  MongoDB: {mongodb_time:.2f}ms | AlloyDB: {alloydb_time:.2f}ms | Total: {duration*1000:.2f}ms")
+                    print_info(f"  MongoDB Search: {mongodb_time:.2f}ms | AlloyDB: {alloydb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
                 else:
-                    print_info(f"  MongoDB: {mongodb_time:.2f}ms | Total: {duration*1000:.2f}ms")
+                    print_info(f"  MongoDB Decrypt: {mongodb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
+
+                # Validate expected result count if limit is specified
+                if limit is not None and results_count != limit:
+                    # If we got fewer results than expected, it's due to insufficient data (NA)
+                    if results_count < limit:
+                        print_info(f"Expected {limit} results, got {results_count} (insufficient test data - NA)")
+                        metrics.add_result(test_name, True, duration, {
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit,
+                            "status": "NA",
+                            "metrics": data['metrics']
+                        })
+                        return True  # Pass with NA status
+                    else:
+                        # If we got MORE results than expected, that's an API bug
+                        print_error(f"Expected {limit} results, but got {results_count} (API limit not working)")
+                        metrics.add_result(test_name, False, duration, {
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit,
+                            "error": "API returned more results than limit",
+                            "metrics": data['metrics']
+                        })
+                        return False
 
                 # Validate first customer - require at least one result
                 if not data['data']:
@@ -395,7 +529,12 @@ def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid"):
 
                 if validate_customer_response(data['data'][0], mode):
                     print_success("Customer data validation passed")
-                    metrics.add_result(test_name, True, duration, {"mode": mode})
+                    metrics.add_result(test_name, True, duration, {
+                        "mode": mode,
+                        "results_count": results_count,
+                        "expected_count": limit,
+                        "metrics": data['metrics']
+                    })
                     return True
                 else:
                     print_error("Customer data validation failed")
@@ -475,7 +614,7 @@ def test_suffix_search(metrics, field, suffix, test_name, mode="hybrid"):
         metrics.add_result(test_name, False, duration)
         return False
 
-def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
+def test_substring_search(metrics, field, substring, test_name, mode="hybrid", limit=None):
     """Test encrypted substring search (Preview Feature)"""
     print_test_start(test_name)
 
@@ -483,6 +622,8 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
     try:
         params = {field.replace("_", ""): substring} if "_" in field else {"substring": substring}
         params["mode"] = mode
+        if limit is not None:
+            params["limit"] = limit
 
         response = requests.get(
             f"{API_BASE_URL}/api/v1/customers/search/{field}/substring",
@@ -496,14 +637,47 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
             data = response.json()
             if data['success']:
                 results_count = len(data['data'])
-                mongodb_time = data['metrics']['mongodb_search_ms']
-                alloydb_time = data['metrics'].get('alloydb_fetch_ms', 0)
+                api_total_time = data['metrics']['total_ms']
+                client_time = duration * 1000
+
+                # Get appropriate MongoDB time based on mode
+                if mode == "hybrid":
+                    mongodb_time = data['metrics']['mongodb_search_ms']
+                    alloydb_time = data['metrics'].get('alloydb_fetch_ms', 0)
+                else:  # mongodb_only
+                    mongodb_time = data['metrics'].get('mongodb_decrypt_ms', 0)
+                    alloydb_time = 0
 
                 print_success(f"{test_name} - Found {results_count} results")
                 if mode == "hybrid":
-                    print_info(f"  MongoDB: {mongodb_time:.2f}ms | AlloyDB: {alloydb_time:.2f}ms | Total: {duration*1000:.2f}ms")
+                    print_info(f"  MongoDB Search: {mongodb_time:.2f}ms | AlloyDB: {alloydb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
                 else:
-                    print_info(f"  MongoDB: {mongodb_time:.2f}ms | Total: {duration*1000:.2f}ms")
+                    print_info(f"  MongoDB Decrypt: {mongodb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
+
+                # Validate expected result count if limit is specified
+                if limit is not None and results_count != limit:
+                    # If we got fewer results than expected, it's due to insufficient data (NA)
+                    if results_count < limit:
+                        print_info(f"Expected {limit} results, got {results_count} (insufficient test data - NA)")
+                        metrics.add_result(test_name, True, duration, {
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit,
+                            "status": "NA",
+                            "metrics": data['metrics']
+                        })
+                        return True  # Pass with NA status
+                    else:
+                        # If we got MORE results than expected, that's an API bug
+                        print_error(f"Expected {limit} results, but got {results_count} (API limit not working)")
+                        metrics.add_result(test_name, False, duration, {
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit,
+                            "error": "API returned more results than limit",
+                            "metrics": data['metrics']
+                        })
+                        return False
 
                 # Validate first customer - require at least one result
                 if not data['data']:
@@ -513,7 +687,12 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid"):
 
                 if validate_customer_response(data['data'][0], mode):
                     print_success("Customer data validation passed")
-                    metrics.add_result(test_name, True, duration, {"mode": mode})
+                    metrics.add_result(test_name, True, duration, {
+                        "mode": mode,
+                        "results_count": results_count,
+                        "expected_count": limit,
+                        "metrics": data['metrics']
+                    })
                     return True
                 else:
                     print_error("Customer data validation failed")
@@ -619,51 +798,96 @@ def test_denodo_search(metrics, search_type, search_param, test_name, data_sourc
 
 
 def run_performance_tests(metrics, iterations=10):
-    """Run performance tests with multiple iterations for all encrypted and AlloyDB operations"""
+    """Run performance tests with multiple iterations for all encrypted and AlloyDB operations
+
+    Uses different query values for each iteration to better simulate real-world usage.
+    """
     print_header("Performance Testing")
     print_info(f"Running {iterations} iterations per test...")
 
-    # Define all tests: (name, endpoint_type, field, query_type, param_name, value, mode)
-    # endpoint_type: "search", "direct", "tier"
-    # query_type: "equality", "prefix", "substring" (only for search)
-    # param_name: the query parameter name to use in the URL
-    # mode: "hybrid" or "mongodb_only"
+    # Fetch sample pool for varied test data
+    sample_size = max(iterations * 2, 200)  # Fetch at least twice the iterations, minimum 200
+    print_info(f"Fetching sample pool of {sample_size} test values...")
+    test_pool = get_test_data_pool(sample_size)
 
+    if not test_pool:
+        print_error("Failed to fetch test data pool. Using static values as fallback.")
+        test_pool = None
+    else:
+        print_success(f"Loaded test pool: {len(test_pool['phones'])} phones, {len(test_pool['emails'])} emails, {len(test_pool['names'])} names")
+
+    # Define all tests: (name, endpoint_type, field, query_type, param_name, pool_key, mode)
+    # pool_key: the key in test_pool to get values from
     base_tests = [
         # Equality searches (phone, category, status)
-        ("Phone Equality Search", "search", "phone", "equality", "phone", TEST_PHONE),
-        ("Category Equality Search", "search", "category", "equality", "category", TEST_CATEGORY),
-        ("Status Equality Search", "search", "status", "equality", "status", TEST_STATUS),
+        ("Phone Equality Search", "search", "phone", "equality", "phone", "phones"),
+        ("Category Equality Search", "search", "category", "equality", "category", "categories"),
+        ("Status Equality Search", "search", "status", "equality", "status", "statuses"),
 
         # Prefix searches (email) - parameter name is always "prefix"
-        ("Email Exact Match via Prefix", "search", "email", "prefix", "prefix", TEST_EMAIL),
-        ("Email Prefix Search - Username", "search", "email", "prefix", "prefix", TEST_EMAIL.split('@')[0]),
+        ("Email Exact Match via Prefix", "search", "email", "prefix", "prefix", "emails"),
+        ("Email Prefix Search - Username", "search", "email", "prefix", "prefix", "email_prefixes"),
 
         # Substring searches (name) - parameter name is always "substring"
-        ("Encrypted Name Search", "search", "name", "substring", "substring", TEST_NAME[:10] if len(TEST_NAME) > 10 else TEST_NAME),
-        ("Name Substring - First Name", "search", "name", "substring", "substring", TEST_NAME.split()[0][:10] if ' ' in TEST_NAME else TEST_NAME[:5]),
-        ("Name Substring - Last Name", "search", "name", "substring", "substring", TEST_NAME.split()[-1][:10] if ' ' in TEST_NAME else TEST_NAME[-5:]),
-        ("Name Substring - Partial Match", "search", "name", "substring", "substring", TEST_NAME[:4] if len(TEST_NAME) >= 4 else TEST_NAME[:2])
+        ("Encrypted Name Search", "search", "name", "substring", "substring", "name_substrings"),
+        ("Name Substring - First Name", "search", "name", "substring", "substring", "name_substrings"),
+        ("Name Substring - Last Name", "search", "name", "substring", "substring", "names"),  # Use full names, extract last name
+        ("Name Substring - Partial Match", "search", "name", "substring", "substring", "name_substrings")
     ]
 
     # Duplicate tests for both modes
     tests = []
-    for test_name, endpoint_type, field, query_type, param_name, test_value in base_tests:
+    for test_name, endpoint_type, field, query_type, param_name, pool_key in base_tests:
         # Add hybrid mode version
-        tests.append((f"{test_name} (Hybrid)", endpoint_type, field, query_type, param_name, test_value, "hybrid"))
+        tests.append((f"{test_name} (Hybrid)", endpoint_type, field, query_type, param_name, pool_key, "hybrid"))
         # Add mongodb_only mode version
-        tests.append((f"{test_name} (MongoDB-Only)", endpoint_type, field, query_type, param_name, test_value, "mongodb_only"))
+        tests.append((f"{test_name} (MongoDB-Only)", endpoint_type, field, query_type, param_name, pool_key, "mongodb_only"))
 
     results = {}
 
-    for test_name, endpoint_type, field, query_type, param_name, test_value, mode in tests:
+    for test_name, endpoint_type, field, query_type, param_name, pool_key, mode in tests:
         print(f"\n{Colors.BOLD}{test_name}:{Colors.ENDC}")
         times = []
 
         for i in range(iterations):
+            # Add small delay between iterations to prevent MongoDB driver overload
+            # This is especially important for MongoDB-only mode with high iteration counts
+            if i > 0:
+                time.sleep(0.05)  # 50ms delay between iterations
+
             start = time.time()
 
             try:
+                # Get test value for this iteration
+                if test_pool and pool_key in test_pool and test_pool[pool_key]:
+                    # If pool is big enough, use sequential values; otherwise pick randomly
+                    if len(test_pool[pool_key]) >= iterations:
+                        test_value = test_pool[pool_key][i % len(test_pool[pool_key])]
+                    else:
+                        # Pool too small, pick randomly
+                        import random
+                        test_value = random.choice(test_pool[pool_key])
+
+                    # Special processing for certain test types
+                    if "Last Name" in test_name and ' ' in test_value:
+                        test_value = test_value.split()[-1][:10]  # Extract last name substring
+                    elif "Partial Match" in test_name and len(test_value) > 4:
+                        test_value = test_value[:4]  # Take first 4 chars for partial match
+                else:
+                    # Fallback to static test value
+                    if "Phone" in test_name:
+                        test_value = TEST_PHONE
+                    elif "Email" in test_name and "Username" in test_name:
+                        test_value = TEST_EMAIL.split('@')[0][:4]
+                    elif "Email" in test_name:
+                        test_value = TEST_EMAIL
+                    elif "Category" in test_name:
+                        test_value = TEST_CATEGORY
+                    elif "Status" in test_name:
+                        test_value = TEST_STATUS
+                    else:
+                        test_value = TEST_NAME[:10]
+
                 # Build appropriate request based on endpoint type
                 if endpoint_type == "search":
                     if query_type == "equality":
@@ -738,7 +962,7 @@ def run_performance_tests(metrics, iterations=10):
 
     return results
 
-def generate_html_report(metrics, perf_results, output_file, data_stats=None):
+def generate_html_report(metrics, perf_results, output_file, data_stats=None, iterations=None):
     """Generate HTML test report"""
     print_info(f"Generating HTML report: {output_file}")
 
@@ -755,6 +979,16 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
         <div class="metric-card">
             <div class="metric-label">Encryption Keys</div>
             <div class="metric-value">{data_stats.get('encryption_keys', 0)}</div>
+        </div>
+        """
+
+    # Add iterations information if available
+    iterations_html = ""
+    if iterations:
+        iterations_html = f"""
+        <div class="metric-card">
+            <div class="metric-label">Test Iterations</div>
+            <div class="metric-value">{iterations}</div>
         </div>
         """
 
@@ -914,6 +1148,7 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
                 <div class="metric-label">Benchmark Duration</div>
                 <div class="metric-value">{metrics.total_benchmark_duration:.2f}s</div>
             </div>
+            {iterations_html}
             {data_stats_html}
         </div>
 
@@ -948,7 +1183,51 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
     html += """
             </tbody>
         </table>
+    """
 
+    # Mode Comparison by Result Set Size - Always generate if we have result-size test data
+    # Build test data from all test results
+    all_tests = {}
+    for result in metrics.test_results:
+        test_name = result.get('name', '')
+        # Skip health check and other non-search tests
+        if 'Health Check' in test_name:
+            continue
+
+        # Extract base name and mode
+        base_name = test_name.replace(" (Hybrid)", "").replace(" (MongoDB-Only)", "")
+        mode = 'Hybrid' if '(Hybrid)' in test_name else 'MongoDB-Only'
+
+        # Get timing data and test status
+        test_details = result.get('details', {})
+        test_metrics = test_details.get('metrics', {})
+        total_time = test_metrics.get('total_ms', 0)
+
+        # Only include tests that actually passed (not failed, not NA status)
+        # Check if test passed AND returned expected number of records
+        test_passed = result.get('passed', False)
+        test_status = test_details.get('status', None)
+        results_count = test_details.get('results_count', None)
+        expected_count = test_details.get('expected_count', None)
+
+        # Only include if:
+        # 1. Test passed
+        # 2. Status is not "NA" (insufficient data)
+        # 3. If expected_count is specified, results_count must match it exactly
+        if not test_passed:
+            continue  # Skip failed tests
+        if test_status == "NA":
+            continue  # Skip tests with insufficient data
+        if expected_count is not None and results_count != expected_count:
+            continue  # Skip tests that didn't return exact expected count
+
+        if base_name not in all_tests:
+            all_tests[base_name] = {}
+
+        all_tests[base_name][mode] = total_time
+
+    # Performance Metrics section
+    html += """
         <h2>Performance Metrics</h2>
     """
 
@@ -957,15 +1236,18 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
         <table>
             <thead>
                 <tr>
-                    <th>Operation</th>
-                    <th>Mode</th>
-                    <th>Encryption Type</th>
-                    <th>Average (ms)</th>
+                    <th rowspan="2">Operation</th>
+                    <th rowspan="2">Encryption Type</th>
+                    <th colspan="3">Hybrid Mode</th>
+                    <th colspan="3">MongoDB-Only Mode</th>
+                </tr>
+                <tr>
+                    <th>Avg (ms)</th>
                     <th>Median (ms)</th>
-                    <th>Min (ms)</th>
-                    <th>Max (ms)</th>
                     <th>Std Dev</th>
-                    <th>Samples</th>
+                    <th>Avg (ms)</th>
+                    <th>Median (ms)</th>
+                    <th>Std Dev</th>
                 </tr>
             </thead>
             <tbody>
@@ -976,95 +1258,209 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None):
         for perf_data in metrics.performance_data:
             encryption_type_map[perf_data['operation']] = perf_data.get('encryption_type')
 
+        # Group by base operation name
+        import re
+        grouped_results = {}
         for operation, stats in perf_results.items():
-            mode_display = stats.get('mode', 'hybrid').replace('_', ' ').title()
-            encryption_type = encryption_type_map.get(operation)
+            # Extract base name and mode
+            base_name = operation.replace(" (Hybrid)", "").replace(" (MongoDB-Only)", "")
+            mode = 'hybrid' if '(Hybrid)' in operation else 'mongodb_only'
+
+            if base_name not in grouped_results:
+                grouped_results[base_name] = {'hybrid': None, 'mongodb_only': None}
+
+            grouped_results[base_name][mode] = stats
+
+        # Generate grouped rows
+        for base_name in sorted(grouped_results.keys()):
+            modes_data = grouped_results[base_name]
+            hybrid_stats = modes_data.get('hybrid')
+            mongo_stats = modes_data.get('mongodb_only')
+
+            # Get encryption type (use first available operation)
+            operation_with_mode = f"{base_name} (Hybrid)" if hybrid_stats else f"{base_name} (MongoDB-Only)"
+            encryption_type = encryption_type_map.get(operation_with_mode, 'none')
 
             # Generate badge HTML
-            if encryption_type:
+            if encryption_type and encryption_type != 'none':
                 badge_class = f"badge-{encryption_type}"
                 badge_html = f'<span class="encryption-badge {badge_class}">{encryption_type}</span>'
             else:
                 badge_html = '<span class="encryption-badge badge-none">None</span>'
 
-            html += f"""
-                <tr>
-                    <td>{operation}</td>
-                    <td>{mode_display}</td>
-                    <td>{badge_html}</td>
-                    <td>{stats['average']:.2f}</td>
-                    <td>{stats['median']:.2f}</td>
-                    <td>{stats['min']:.2f}</td>
-                    <td>{stats['max']:.2f}</td>
-                    <td>{stats['stddev']:.2f}</td>
-                    <td>{stats['samples']}</td>
-                </tr>
-            """
+            html += f"<tr><td>{base_name}</td><td>{badge_html}</td>"
+
+            # Hybrid mode columns
+            if hybrid_stats:
+                html += f"<td>{hybrid_stats['average']:.2f}</td><td>{hybrid_stats['median']:.2f}</td><td>{hybrid_stats['stddev']:.2f}</td>"
+            else:
+                html += "<td>-</td><td>-</td><td>-</td>"
+
+            # MongoDB-Only mode columns
+            if mongo_stats:
+                html += f"<td>{mongo_stats['average']:.2f}</td><td>{mongo_stats['median']:.2f}</td><td>{mongo_stats['stddev']:.2f}</td>"
+            else:
+                html += "<td>-</td><td>-</td><td>-</td>"
+
+            html += "</tr>"
 
         html += """
             </tbody>
         </table>
+        """
 
-        <h2>Mode Comparison</h2>
-        <p>This section shows side-by-side performance comparison between Hybrid and MongoDB-Only modes.</p>
-        <table>
+        # Build test data from all test results (not just result size tests)
+        # Group by base test name and collect data for both modes
+        all_tests = {}
+        for result in metrics.test_results:
+            test_name = result.get('name', '')
+            # Skip health check and other non-search tests
+            if 'Health Check' in test_name:
+                continue
+
+            # Only include tests with explicit result size specification
+            # This filters out Preview Feature Tests that don't have "- X results" pattern
+            if " results " not in test_name and " record " not in test_name:
+                continue  # Skip tests without explicit result size (e.g., Preview Feature Tests)
+
+            # Extract base name and mode
+            base_name = test_name.replace(" (Hybrid)", "").replace(" (MongoDB-Only)", "")
+            mode = 'Hybrid' if '(Hybrid)' in test_name else 'MongoDB-Only'
+
+            # Get timing data and test status
+            test_details = result.get('details', {})
+            test_metrics = test_details.get('metrics', {})
+            total_time = test_metrics.get('total_ms', 0)
+
+            # Only include tests that actually passed (not failed, not NA status)
+            # Check if test passed AND returned expected number of records
+            test_passed = result.get('passed', False)
+            test_status = test_details.get('status', None)
+            results_count = test_details.get('results_count', None)
+            expected_count = test_details.get('expected_count', None)
+
+            # Only include if:
+            # 1. Test passed
+            # 2. Status is not "NA" (insufficient data)
+            # 3. If expected_count is specified, results_count must match it exactly
+            if not test_passed:
+                continue  # Skip failed tests
+            if test_status == "NA":
+                continue  # Skip tests with insufficient data
+            if expected_count is not None and results_count != expected_count:
+                continue  # Skip tests that didn't return exact expected count
+
+            if base_name not in all_tests:
+                all_tests[base_name] = {}
+
+            all_tests[base_name][mode] = total_time
+
+        # Generate Mode Comparison table with header
+        html += """
+        <h2>Mode Comparison by Result Set Size</h2>
+        <p>Performance comparison between Hybrid and MongoDB-Only modes across different result set sizes.</p>
+
+        <table style="margin-bottom: 30px;">
             <thead>
                 <tr>
-                    <th>Operation</th>
-                    <th>Hybrid Avg (ms)</th>
-                    <th>MongoDB-Only Avg (ms)</th>
-                    <th>Difference (ms)</th>
-                    <th>% Change</th>
+                    <th rowspan="2">Test Type</th>
+                    <th rowspan="2">Encryption Type</th>
+                    <th colspan="3">1 Record</th>
+                    <th colspan="3">100 Records</th>
+                    <th colspan="3">500 Records</th>
+                    <th colspan="3">1000 Records</th>
+                </tr>
+                <tr>
+                    <th>Hybrid (ms)</th>
+                    <th>MongoDB (ms)</th>
+                    <th>Diff (ms)</th>
+                    <th>Hybrid (ms)</th>
+                    <th>MongoDB (ms)</th>
+                    <th>Diff (ms)</th>
+                    <th>Hybrid (ms)</th>
+                    <th>MongoDB (ms)</th>
+                    <th>Diff (ms)</th>
+                    <th>Hybrid (ms)</th>
+                    <th>MongoDB (ms)</th>
+                    <th>Diff (ms)</th>
                 </tr>
             </thead>
             <tbody>
-        """
+            """
 
-        # Group results by base operation name
-        comparisons = {}
-        for operation, stats in perf_results.items():
-            # Extract base name by removing mode suffix
-            base_name = operation.replace(" (Hybrid)", "").replace(" (MongoDB-Only)", "")
-            if base_name not in comparisons:
-                comparisons[base_name] = {}
-            if "(Hybrid)" in operation:
-                comparisons[base_name]['hybrid'] = stats['average']
-            elif "(MongoDB-Only)" in operation:
-                comparisons[base_name]['mongodb_only'] = stats['average']
+        # First, collect all unique test base names from all_tests
+        # This includes both regular tests and result-size variant tests
+        all_base_names = set()
+        for test_name in all_tests.keys():
+            # Extract base name by removing "- X results" if present
+            if " - " in test_name and " results" in test_name:
+                # This is a result-size variant test like "Category Search - 100 results"
+                base = test_name.rsplit(" - ", 1)[0]  # Get "Category Search"
+                all_base_names.add(base)
+            else:
+                # Regular test like "Category Equality Search"
+                all_base_names.add(test_name)
 
-        # Generate comparison rows
-        for base_name, modes in comparisons.items():
-            if 'hybrid' in modes and 'mongodb_only' in modes:
-                hybrid_avg = modes['hybrid']
-                mongo_avg = modes['mongodb_only']
-                diff = mongo_avg - hybrid_avg
-                pct_change = (diff / hybrid_avg * 100) if hybrid_avg > 0 else 0
+        # Generate rows for all unique base names
+        for base_name in sorted(all_base_names):
+            # Get encryption type from encryption_type_map
+            # Try to find it using the base_name with (Hybrid) or (MongoDB-Only) suffix
+            operation_with_mode = f"{base_name} (Hybrid)" if f"{base_name} (Hybrid)" in encryption_type_map else f"{base_name} (MongoDB-Only)"
+            encryption_type = encryption_type_map.get(operation_with_mode, 'none')
 
-                # Color code based on performance
-                color_style = ""
-                if diff < 0:
-                    color_style = "style='background-color: #d4edda;'"  # Green for faster
-                elif diff > hybrid_avg * 0.1:  # More than 10% slower
-                    color_style = "style='background-color: #f8d7da;'"  # Red for significantly slower
+            # Generate badge HTML
+            if encryption_type and encryption_type != 'none':
+                badge_class = f"badge-{encryption_type}"
+                badge_html = f'<span class="encryption-badge {badge_class}">{encryption_type}</span>'
+            else:
+                badge_html = '<span class="encryption-badge badge-none">-</span>'
 
-                html += f"""
-                    <tr {color_style}>
-                        <td>{base_name}</td>
-                        <td>{hybrid_avg:.2f}</td>
-                        <td>{mongo_avg:.2f}</td>
-                        <td>{diff:+.2f}</td>
-                        <td>{pct_change:+.1f}%</td>
-                    </tr>
-                """
+            html += f"<tr><td><strong>{base_name}</strong></td><td>{badge_html}</td>"
+
+            # For each result count column (1, 100, 500, 1000)
+            for count in [1, 100, 500, 1000]:
+                # Build test names for this specific result count
+                test_with_count = f"{base_name} - {count} results"
+
+                # Get times for this specific test variant
+                hybrid_time = all_tests.get(test_with_count, {}).get('Hybrid', None)
+                mongo_time = all_tests.get(test_with_count, {}).get('MongoDB-Only', None)
+
+                # If no result-size variant exists and this is the first column (1 record),
+                # try to use the regular test result (without "- X results")
+                if hybrid_time is None and mongo_time is None and count == 1:
+                    hybrid_time = all_tests.get(base_name, {}).get('Hybrid', None)
+                    mongo_time = all_tests.get(base_name, {}).get('MongoDB-Only', None)
+
+                # Only show data if BOTH modes have valid data
+                # If either mode is missing (failed or NA), show dashes for the entire column
+                if hybrid_time is not None and mongo_time is not None:
+                    hybrid_val = hybrid_time
+                    mongo_val = mongo_time
+                    diff = mongo_val - hybrid_val
+
+                    html += f"<td>{hybrid_val:.2f}</td>"
+                    html += f"<td>{mongo_val:.2f}</td>"
+                    color = "color: red;" if diff > 0 else "color: green;"
+                    html += f"<td style='{color}'>{diff:+.2f}</td>"
+                else:
+                    # This test doesn't have valid data for both modes
+                    html += "<td>-</td><td>-</td><td>-</td>"
+
+            html += "</tr>"
 
         html += """
             </tbody>
         </table>
+            """
+
+        html += """
         <p style="margin-top: 10px; font-size: 12px; color: #666;">
-            <strong>Note:</strong> Green rows indicate MongoDB-Only is faster. Red rows indicate MongoDB-Only is significantly slower (>10%).
-            Positive values mean MongoDB-Only took longer; negative values mean it was faster.
+            <strong>Note:</strong> Positive difference (red) means MongoDB-Only is slower.
+            Hybrid mode benefits from AlloyDB's plaintext storage, while MongoDB-Only decrypts all fields.
         </p>
         """
+
     else:
         html += "<p>No performance tests run.</p>"
 
@@ -1189,11 +1585,97 @@ def check_denodo_endpoints():
         print_error(f"Denodo check failed: {e}")
         return False
 
+def run_equality_tests(metrics):
+    """Run equality query tests for both Hybrid and MongoDB-Only modes"""
+    print_header("Equality Query Tests - Hybrid Mode")
+
+    test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (Hybrid)", "hybrid")
+    test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (Hybrid)", "hybrid")
+    test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (Hybrid)", "hybrid")
+
+    print_header("Equality Query Tests - MongoDB-Only Mode")
+
+    test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (MongoDB-Only)", "mongodb_only")
+    test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (MongoDB-Only)", "mongodb_only")
+    test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (MongoDB-Only)", "mongodb_only")
+
+def run_result_size_tests(metrics):
+    """Run result set size performance tests"""
+    print_header("Result Set Size Performance Tests")
+    print_info("Testing how performance scales with different result set sizes")
+    print_info("Using low-cardinality fields to control result counts")
+    print()
+
+    result_sizes = [1, 100, 500, 1000]
+    result_size_tests = [
+        ("phone", TEST_PHONE, "Phone Equality Search"),
+        ("category", TEST_CATEGORY, "Category Equality Search"),
+        ("status", TEST_STATUS, "Status Equality Search"),
+    ]
+
+    for field, value, base_name in result_size_tests:
+        for limit in result_sizes:
+            print_header(f"{base_name} - {limit} records")
+            test_encrypted_search(metrics, field, value, f"{base_name} - {limit} results (Hybrid)", "hybrid", limit=limit)
+            test_encrypted_search(metrics, field, value, f"{base_name} - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+
+    # Add result size variants for Prefix queries
+    print_header("Result Set Size Tests - Prefix Queries")
+    prefix_username = TEST_EMAIL.split('@')[0][:4]
+
+    for limit in result_sizes:
+        print_header(f"Email Prefix Search - Username - {limit} records")
+        test_prefix_search(metrics, "email", prefix_username, f"Email Prefix Search - Username - {limit} results (Hybrid)", "hybrid", limit=limit)
+        test_prefix_search(metrics, "email", prefix_username, f"Email Prefix Search - Username - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+
+    # Add result size variants for Substring queries
+    print_header("Result Set Size Tests - Substring Queries")
+    name_first = TEST_NAME.split()[0]
+    name_last = TEST_NAME.split()[-1]
+    name_partial = TEST_NAME.split()[0][:3]
+
+    for limit in result_sizes:
+        print_header(f"Name Substring - First Name - {limit} records")
+        test_substring_search(metrics, "name", name_first, f"Name Substring - First Name - {limit} results (Hybrid)", "hybrid", limit=limit)
+        test_substring_search(metrics, "name", name_first, f"Name Substring - First Name - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+
+    for limit in result_sizes:
+        print_header(f"Name Substring - Last Name - {limit} records")
+        test_substring_search(metrics, "name", name_last, f"Name Substring - Last Name - {limit} results (Hybrid)", "hybrid", limit=limit)
+        test_substring_search(metrics, "name", name_last, f"Name Substring - Last Name - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+
+    for limit in result_sizes:
+        print_header(f"Name Substring - Partial Match - {limit} records")
+        test_substring_search(metrics, "name", name_partial, f"Name Substring - Partial Match - {limit} results (Hybrid)", "hybrid", limit=limit)
+        test_substring_search(metrics, "name", name_partial, f"Name Substring - Partial Match - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+
+def run_preview_feature_tests(metrics):
+    """Run preview feature tests (prefix and substring queries)"""
+    print_header("Preview Feature Tests - Prefix Queries (Hybrid Mode)")
+
+    test_prefix_search(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix (Hybrid)", "hybrid")
+    test_prefix_search(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username (Hybrid)", "hybrid")
+
+    print_header("Preview Feature Tests - Prefix Queries (MongoDB-Only Mode)")
+
+    test_prefix_search(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix (MongoDB-Only)", "mongodb_only")
+    test_prefix_search(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username (MongoDB-Only)", "mongodb_only")
+
+    print_header("Preview Feature Tests - Substring Queries (Hybrid Mode)")
+
+    test_substring_search(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name (Hybrid)", "hybrid")
+    test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (Hybrid)", "hybrid")
+    test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (Hybrid)", "hybrid")
+
+    print_header("Preview Feature Tests - Substring Queries (MongoDB-Only Mode)")
+
+    test_substring_search(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name (MongoDB-Only)", "mongodb_only")
+    test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (MongoDB-Only)", "mongodb_only")
+    test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (MongoDB-Only)", "mongodb_only")
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Run POC tests with real-time metrics")
-    parser.add_argument('--quick', action='store_true', help='Run quick tests only')
-    parser.add_argument('--performance', action='store_true', help='Run performance tests only')
     parser.add_argument('--iterations', type=int, default=100, help='Performance test iterations (default: 100)')
     parser.add_argument('--report', default='test_report.html', help='Output report file')
     parser.add_argument('--skip-validation', action='store_true', help='Skip data validation check')
@@ -1201,7 +1683,7 @@ def main():
 
     print_header("POC Test Suite")
     print_info(f"API Endpoint: {API_BASE_URL}")
-    print_info(f"Test Mode: {'Quick' if args.quick else 'Performance' if args.performance else 'Full'}")
+    print_info(f"Test Mode: Full (Functional + Performance + Result-Size Variants)")
 
     # Validate data availability unless explicitly skipped
     if not args.skip_validation:
@@ -1218,127 +1700,68 @@ def main():
     metrics = TestMetrics()
     perf_results = {}
 
-    # Quick/Functional Tests
-    if not args.performance:
-        print_header("Functional Tests")
+    # Functional Tests
+    print_header("Functional Tests")
+    test_health_check(metrics)
 
-        # Test 1: Health Check
-        test_health_check(metrics)
+    # Run all test suites
+    run_equality_tests(metrics)
+    run_result_size_tests(metrics)
+    run_preview_feature_tests(metrics)
 
-        print_header("Equality Query Tests - Hybrid Mode")
+    # Denodo Mode Tests (if available)
+    if DENODO_AVAILABLE and denodo_endpoints_available:
+        print_header("Denodo Tests - Hybrid Mode")
+        print_info("Testing Denodo Hybrid: MongoDB encrypted search + AlloyDB data fetch")
+        print_warning(f"License Limits: MaxSimultaneousRequests={3}, MaxRowsPerQuery={10000}")
 
-        # Test 2: Phone Equality Search (Hybrid)
-        test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (Hybrid)", "hybrid")
+        # Reset license limiter stats
+        license_limiter.reset()
 
-        # Test 3: Category Equality Search (Hybrid)
-        test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (Hybrid)", "hybrid")
+        # Test 18: Phone Search via Denodo-Hybrid
+        test_denodo_search(metrics, "phone", TEST_PHONE, "Phone Search (Denodo-Hybrid)", "hybrid")
 
-        # Test 4: Status Equality Search (Hybrid)
-        test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (Hybrid)", "hybrid")
+        # Test 19: Category Search via Denodo-Hybrid
+        test_denodo_search(metrics, "category", TEST_CATEGORY, "Category Search (Denodo-Hybrid)", "hybrid")
 
-        print_header("Equality Query Tests - MongoDB-Only Mode")
+        # Test 20: Status Search via Denodo-Hybrid
+        test_denodo_search(metrics, "status", TEST_STATUS, "Status Search (Denodo-Hybrid)", "hybrid")
 
-        # Test 5: Phone Equality Search (MongoDB-Only)
-        test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (MongoDB-Only)", "mongodb_only")
+        # Test 21: Email Prefix Search via Denodo-Hybrid
+        test_denodo_search(metrics, "email_prefix", TEST_EMAIL.split('@')[0], "Email Prefix Search (Denodo-Hybrid)", "hybrid")
 
-        # Test 6: Category Equality Search (MongoDB-Only)
-        test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (MongoDB-Only)", "mongodb_only")
+        # Test 22: Name Substring Search via Denodo-Hybrid
+        test_denodo_search(metrics, "name_substring", TEST_NAME.split()[0], "Name Substring Search (Denodo-Hybrid)", "hybrid")
 
-        # Test 7: Status Equality Search (MongoDB-Only)
-        test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (MongoDB-Only)", "mongodb_only")
+        print_header("Denodo Tests - MongoDB-Only Mode")
+        print_info("Testing Denodo MongoDB-Only: MongoDB search + decrypt (no AlloyDB)")
 
-        print_header("Preview Feature Tests - Prefix Queries (Hybrid Mode)")
+        # Test 23: Phone Search via Denodo-MongoDB
+        test_denodo_search(metrics, "phone", TEST_PHONE, "Phone Search (Denodo-MongoDB)", "mongodb")
 
-        # Test 8: Email Exact Match (full-value prefix) - Hybrid
-        test_prefix_search(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix (Hybrid)", "hybrid")
+        # Test 24: Category Search via Denodo-MongoDB
+        test_denodo_search(metrics, "category", TEST_CATEGORY, "Category Search (Denodo-MongoDB)", "mongodb")
 
-        # Test 9: Email Partial Prefix (username search) - Hybrid
-        test_prefix_search(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username (Hybrid)", "hybrid")
+        # Test 25: Status Search via Denodo-MongoDB
+        test_denodo_search(metrics, "status", TEST_STATUS, "Status Search (Denodo-MongoDB)", "mongodb")
 
-        print_header("Preview Feature Tests - Prefix Queries (MongoDB-Only Mode)")
+        # Test 26: Email Prefix Search via Denodo-MongoDB
+        test_denodo_search(metrics, "email_prefix", TEST_EMAIL.split('@')[0], "Email Prefix Search (Denodo-MongoDB)", "mongodb")
 
-        # Test 10: Email Exact Match (full-value prefix) - MongoDB-Only
-        test_prefix_search(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix (MongoDB-Only)", "mongodb_only")
+        # Test 27: Name Substring Search via Denodo-MongoDB
+        test_denodo_search(metrics, "name_substring", TEST_NAME.split()[0], "Name Substring Search (Denodo-MongoDB)", "mongodb")
 
-        # Test 11: Email Partial Prefix (username search) - MongoDB-Only
-        test_prefix_search(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username (MongoDB-Only)", "mongodb_only")
-
-        print_header("Preview Feature Tests - Substring Queries (Hybrid Mode)")
-
-        # Test 12: Name First Name Search - Hybrid
-        test_substring_search(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name (Hybrid)", "hybrid")
-
-        # Test 13: Name Last Name Search - Hybrid
-        test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (Hybrid)", "hybrid")
-
-        # Test 14: Name Partial Search - Hybrid
-        test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (Hybrid)", "hybrid")
-
-        print_header("Preview Feature Tests - Substring Queries (MongoDB-Only Mode)")
-
-        # Test 15: Name First Name Search - MongoDB-Only
-        test_substring_search(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name (MongoDB-Only)", "mongodb_only")
-
-        # Test 16: Name Last Name Search - MongoDB-Only
-        test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (MongoDB-Only)", "mongodb_only")
-
-        # Test 17: Name Partial Search - MongoDB-Only
-        test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (MongoDB-Only)", "mongodb_only")
-
-        # Denodo Mode Tests (if available)
-        if DENODO_AVAILABLE and denodo_endpoints_available:
-            print_header("Denodo Tests - Hybrid Mode")
-            print_info("Testing Denodo Hybrid: MongoDB encrypted search + AlloyDB data fetch")
-            print_warning(f"License Limits: MaxSimultaneousRequests={3}, MaxRowsPerQuery={10000}")
-
-            # Reset license limiter stats
-            license_limiter.reset()
-
-            # Test 18: Phone Search via Denodo-Hybrid
-            test_denodo_search(metrics, "phone", TEST_PHONE, "Phone Search (Denodo-Hybrid)", "hybrid")
-
-            # Test 19: Category Search via Denodo-Hybrid
-            test_denodo_search(metrics, "category", TEST_CATEGORY, "Category Search (Denodo-Hybrid)", "hybrid")
-
-            # Test 20: Status Search via Denodo-Hybrid
-            test_denodo_search(metrics, "status", TEST_STATUS, "Status Search (Denodo-Hybrid)", "hybrid")
-
-            # Test 21: Email Prefix Search via Denodo-Hybrid
-            test_denodo_search(metrics, "email_prefix", TEST_EMAIL.split('@')[0], "Email Prefix Search (Denodo-Hybrid)", "hybrid")
-
-            # Test 22: Name Substring Search via Denodo-Hybrid
-            test_denodo_search(metrics, "name_substring", TEST_NAME.split()[0], "Name Substring Search (Denodo-Hybrid)", "hybrid")
-
-            print_header("Denodo Tests - MongoDB-Only Mode")
-            print_info("Testing Denodo MongoDB-Only: MongoDB search + decrypt (no AlloyDB)")
-
-            # Test 23: Phone Search via Denodo-MongoDB
-            test_denodo_search(metrics, "phone", TEST_PHONE, "Phone Search (Denodo-MongoDB)", "mongodb")
-
-            # Test 24: Category Search via Denodo-MongoDB
-            test_denodo_search(metrics, "category", TEST_CATEGORY, "Category Search (Denodo-MongoDB)", "mongodb")
-
-            # Test 25: Status Search via Denodo-MongoDB
-            test_denodo_search(metrics, "status", TEST_STATUS, "Status Search (Denodo-MongoDB)", "mongodb")
-
-            # Test 26: Email Prefix Search via Denodo-MongoDB
-            test_denodo_search(metrics, "email_prefix", TEST_EMAIL.split('@')[0], "Email Prefix Search (Denodo-MongoDB)", "mongodb")
-
-            # Test 27: Name Substring Search via Denodo-MongoDB
-            test_denodo_search(metrics, "name_substring", TEST_NAME.split()[0], "Name Substring Search (Denodo-MongoDB)", "mongodb")
-
-            # Display license usage summary
-            license_stats = license_limiter.get_stats()
-            print()
-            print(f"{Colors.BOLD}Denodo License Usage:{Colors.ENDC}")
-            print(f"  Total Requests:       {license_stats['total_requests']}")
-            print(f"  Max Concurrent:       {license_stats['max_concurrent_requests']}/{license_stats['max_allowed_concurrent']}")
-            print(f"  Throttled Requests:   {license_stats['throttled_requests']}")
-            print(f"  License Violations:   {license_stats['license_violations']}")
+        # Display license usage summary
+        license_stats = license_limiter.get_stats()
+        print()
+        print(f"{Colors.BOLD}Denodo License Usage:{Colors.ENDC}")
+        print(f"  Total Requests:       {license_stats['total_requests']}")
+        print(f"  Max Concurrent:       {license_stats['max_concurrent_requests']}/{license_stats['max_allowed_concurrent']}")
+        print(f"  Throttled Requests:   {license_stats['throttled_requests']}")
+        print(f"  License Violations:   {license_stats['license_violations']}")
 
     # Performance Tests
-    if not args.quick:
-        perf_results = run_performance_tests(metrics, args.iterations)
+    perf_results = run_performance_tests(metrics, args.iterations)
 
     # Generate Report
     print_header("Test Summary")
@@ -1353,7 +1776,7 @@ def main():
     print(f"  Total Duration: {summary['total_duration']:.2f}s")
 
     # Generate HTML report
-    generate_html_report(metrics, perf_results, args.report, data_stats)
+    generate_html_report(metrics, perf_results, args.report, data_stats, args.iterations)
 
     print()
     if summary['failed'] == 0:

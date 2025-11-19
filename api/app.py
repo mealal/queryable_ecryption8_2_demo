@@ -199,7 +199,7 @@ class DatabaseManager:
                                     "queryType": "prefixPreview",
                                     "contention": 0,
                                     "strMinQueryLength": 3,
-                                    "strMaxQueryLength": 30,
+                                    "strMaxQueryLength": 60,
                                     "strMaxLength": 100,
                                     "caseSensitive": False,
                                     "diacriticSensitive": False
@@ -295,7 +295,69 @@ async def shutdown_event():
 # Helper Functions
 # =====================================================================
 
-def search_mongodb_preview(plaintext_value: str, field: str, query_type: str) -> tuple[List[str], float]:
+def parse_json_fields(customer_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse JSON string fields (address, preferences) into dictionaries
+
+    Args:
+        customer_dict: Customer data dictionary
+
+    Returns:
+        Customer dictionary with parsed JSON fields
+    """
+    # Parse address field
+    address = customer_dict.get('address')
+    if isinstance(address, str):
+        try:
+            customer_dict['address'] = json.loads(address)
+        except json.JSONDecodeError:
+            customer_dict['address'] = {}
+
+    # Parse preferences field
+    preferences = customer_dict.get('preferences')
+    if isinstance(preferences, str):
+        try:
+            customer_dict['preferences'] = json.loads(preferences)
+        except json.JSONDecodeError:
+            customer_dict['preferences'] = {}
+
+    return customer_dict
+
+def build_search_response(
+    customers: List[Dict],
+    mongodb_time: float = 0.0,
+    alloydb_time: float = 0.0,
+    total_time: float = 0.0,
+    mode: str = "hybrid"
+) -> SearchResponse:
+    """Build a standardized SearchResponse
+
+    Args:
+        customers: List of customer dictionaries
+        mongodb_time: MongoDB search/decrypt time in milliseconds
+        alloydb_time: AlloyDB fetch time in milliseconds
+        total_time: Total request time in milliseconds
+        mode: Search mode ("hybrid" or "mongodb_only")
+
+    Returns:
+        SearchResponse object
+    """
+    metrics = PerformanceMetrics(
+        mongodb_search_ms=mongodb_time if mode == "hybrid" else 0.0,
+        mongodb_decrypt_ms=mongodb_time if mode == "mongodb_only" else 0.0,
+        alloydb_fetch_ms=alloydb_time,
+        total_ms=total_time,
+        results_count=len(customers),
+        mode=mode
+    )
+
+    return SearchResponse(
+        success=True,
+        data=[CustomerResponse(**c) for c in customers],
+        metrics=metrics,
+        timestamp=datetime.now(timezone.utc).isoformat()
+    )
+
+def search_mongodb_preview(plaintext_value: str, field: str, query_type: str, limit: int = 100) -> tuple[List[str], float]:
     """
     Search MongoDB with preview query types (prefix, suffix, substring)
     using automatic encryption
@@ -309,6 +371,7 @@ def search_mongodb_preview(plaintext_value: str, field: str, query_type: str) ->
         plaintext_value: Plaintext search value (full or partial)
         field: Field name to search ("email" or "name")
         query_type: Type of preview query ("prefix", "suffix", "substring")
+        limit: Maximum number of results to return (default: 100)
 
     Returns:
         Tuple of (list of UUIDs, elapsed time in ms)
@@ -350,17 +413,17 @@ def search_mongodb_preview(plaintext_value: str, field: str, query_type: str) ->
     else:
         raise ValueError(f"Unsupported query type: {query_type}")
 
-    results = list(db_manager.mongodb_collection.find(query, {"alloy_record_id": 1}))
+    results = list(db_manager.mongodb_collection.find(query, {"alloy_record_id": 1}).limit(limit))
 
     # Extract UUIDs
     uuids = [doc.get("alloy_record_id") for doc in results if "alloy_record_id" in doc]
 
     elapsed_ms = (time.time() - start_time) * 1000
-    logger.info(f"MongoDB preview search ({query_type}) completed in {elapsed_ms:.2f}ms. Found {len(uuids)} results.")
+    logger.info(f"MongoDB preview search ({query_type}) completed in {elapsed_ms:.2f}ms. Found {len(uuids)} results (limit: {limit}).")
 
     return uuids, elapsed_ms
 
-def fetch_and_decrypt_from_mongodb_preview(plaintext_value: str, field: str, query_type: str) -> tuple[List[Dict], float]:
+def fetch_and_decrypt_from_mongodb_preview(plaintext_value: str, field: str, query_type: str, limit: int = 100) -> tuple[List[Dict], float]:
     """
     Fetch customer data from MongoDB with preview query and automatic decryption
 
@@ -371,6 +434,7 @@ def fetch_and_decrypt_from_mongodb_preview(plaintext_value: str, field: str, que
         plaintext_value: Plaintext search value (full or partial)
         field: Field name ("email" or "name")
         query_type: Preview query type ("prefix", "suffix", "substring")
+        limit: Maximum number of results to return (default: 100)
 
     Returns:
         Tuple of (customer data list, elapsed time in ms)
@@ -413,38 +477,25 @@ def fetch_and_decrypt_from_mongodb_preview(plaintext_value: str, field: str, que
         raise ValueError(f"Unsupported query type: {query_type}")
 
     # Execute query with automatic encryption/decryption
-    results = list(db_manager.mongodb_collection.find(query))
+    results = list(db_manager.mongodb_collection.find(query).limit(limit))
 
     # Extract customer data - fields are automatically decrypted
     customers = []
     for doc in results:
         try:
-            address = doc.get("address")
-            if isinstance(address, str):
-                try:
-                    address = json.loads(address)
-                except json.JSONDecodeError:
-                    address = {}
-
-            preferences = doc.get("preferences")
-            if isinstance(preferences, str):
-                try:
-                    preferences = json.loads(preferences)
-                except json.JSONDecodeError:
-                    preferences = {}
-
             customer = {
                 "customer_id": doc.get("alloy_record_id"),
                 "full_name": doc.get("searchable_name"),
                 "email": doc.get("searchable_email"),
                 "phone": doc.get("searchable_phone"),
-                "address": address,
-                "preferences": preferences,
+                "address": doc.get("address"),
+                "preferences": doc.get("preferences"),
                 "tier": doc.get("metadata", {}).get("tier"),
                 "loyalty_points": doc.get("metadata", {}).get("loyalty_points", 0),
                 "last_purchase_date": doc.get("metadata", {}).get("last_purchase_date"),
                 "lifetime_value": float(doc.get("metadata", {}).get("lifetime_value", 0.0))
             }
+            customer = parse_json_fields(customer)
             customers.append(customer)
         except Exception as e:
             logger.error(f"Failed to process document: {e}")
@@ -455,13 +506,14 @@ def fetch_and_decrypt_from_mongodb_preview(plaintext_value: str, field: str, que
 
     return customers, elapsed_ms
 
-def search_mongodb(plaintext_value: str, field: str) -> List[str]:
+def search_mongodb(plaintext_value: str, field: str, limit: int = 100) -> List[str]:
     """
     Search MongoDB encrypted collection using automatic encryption
 
     Args:
         plaintext_value: Plaintext search value (driver will encrypt automatically)
         field: Field name to search
+        limit: Maximum number of results to return (default: 100)
 
     Returns:
         List of UUIDs from matching documents
@@ -480,8 +532,9 @@ def search_mongodb(plaintext_value: str, field: str) -> List[str]:
     mongo_field = field_map.get(field, field)
 
     # Query MongoDB with plaintext - driver encrypts automatically
+    # Apply limit to avoid processing thousands of documents for low-cardinality fields
     query = {mongo_field: plaintext_value}
-    results = list(db_manager.mongodb_collection.find(query, {"alloy_record_id": 1}))
+    results = list(db_manager.mongodb_collection.find(query, {"alloy_record_id": 1}).limit(limit))
 
     # Extract UUIDs
     uuids = [doc.get("alloy_record_id") for doc in results if "alloy_record_id" in doc]
@@ -531,15 +584,16 @@ def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
             # Convert to list of dicts
             customers = []
             for row in results:
-                customer = dict(row)
-                # Parse JSONB fields
-                if customer.get('address') and isinstance(customer['address'], str):
-                    customer['address'] = json.loads(customer['address'])
-                if customer.get('preferences') and isinstance(customer['preferences'], str):
-                    customer['preferences'] = json.loads(customer['preferences'])
+                customer = parse_json_fields(dict(row))
                 customers.append(customer)
 
+            # Commit the transaction
+            db_manager.alloydb_conn.commit()
+
     except Exception as e:
+        # Rollback the transaction on error
+        if db_manager.alloydb_conn:
+            db_manager.alloydb_conn.rollback()
         logger.error(f"AlloyDB query failed: {e}")
         raise
 
@@ -548,13 +602,14 @@ def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
 
     return customers, elapsed_ms
 
-def fetch_and_decrypt_from_mongodb(plaintext_value: str, field: str) -> tuple[List[Dict], float]:
+def fetch_and_decrypt_from_mongodb(plaintext_value: str, field: str, limit: int = 100) -> tuple[List[Dict], float]:
     """
     Fetch customer data directly from MongoDB with automatic decryption (MongoDB-only mode)
 
     Args:
         plaintext_value: Plaintext search value (driver will encrypt automatically)
         field: Field name to search (searchable_name, searchable_email, searchable_phone, etc.)
+        limit: Maximum number of results to return (default: 100)
 
     Returns:
         Tuple of (customer data list, elapsed time in ms)
@@ -573,43 +628,28 @@ def fetch_and_decrypt_from_mongodb(plaintext_value: str, field: str) -> tuple[Li
     mongo_field = field_map.get(field, field)
 
     # Query MongoDB with plaintext - driver encrypts automatically
+    # Apply limit to avoid decrypting thousands of documents for low-cardinality fields
+    # (e.g., category/status have only 3 values each, so each value matches ~3,300 docs)
     query = {mongo_field: plaintext_value}
-    results = list(db_manager.mongodb_collection.find(query))
+    results = list(db_manager.mongodb_collection.find(query).limit(limit))
 
     # Extract customer data - fields are automatically decrypted by driver
     customers = []
     for doc in results:
         try:
-            # Parse address and preferences if they're strings
-            address = doc.get("address")
-            if isinstance(address, str):
-                try:
-                    address = json.loads(address)
-                except json.JSONDecodeError:
-                    address = {}
-
-            preferences = doc.get("preferences")
-            if isinstance(preferences, str):
-                try:
-                    preferences = json.loads(preferences)
-                except json.JSONDecodeError:
-                    preferences = {}
-
             customer = {
                 "customer_id": doc.get("alloy_record_id"),
-                # Searchable fields are automatically decrypted
                 "full_name": doc.get("searchable_name"),
                 "email": doc.get("searchable_email"),
                 "phone": doc.get("searchable_phone"),
-                # Non-sensitive fields
-                "address": address,
-                "preferences": preferences,
-                # Metadata fields
+                "address": doc.get("address"),
+                "preferences": doc.get("preferences"),
                 "tier": doc.get("metadata", {}).get("tier"),
                 "loyalty_points": doc.get("metadata", {}).get("loyalty_points", 0),
                 "last_purchase_date": doc.get("metadata", {}).get("last_purchase_date"),
                 "lifetime_value": float(doc.get("metadata", {}).get("lifetime_value", 0.0))
             }
+            customer = parse_json_fields(customer)
             customers.append(customer)
         except Exception as e:
             logger.error(f"Failed to process document: {e}")
@@ -843,17 +883,18 @@ async def search_by_name(
 @app.get("/api/v1/customers/search/phone", response_model=SearchResponse)
 async def search_by_phone(
     phone: str = Query(..., description="Customer phone to search"),
-    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
+    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)"),
+    limit: int = Query(100, description="Maximum number of results to return (1-10000)", ge=1, le=10000)
 ):
     """Search customers by phone (encrypted search)"""
     request_start = time.time()
 
     try:
-        logger.info(f"Searching for phone: {phone} (mode: {mode})")
+        logger.info(f"Searching for phone: {phone} (mode: {mode}, limit: {limit})")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, fetch_time = fetch_and_decrypt_from_mongodb(phone, "phone")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(phone, "phone", limit)
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
@@ -869,7 +910,7 @@ async def search_by_phone(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(phone, "phone")
+        uuids, mongodb_time = search_mongodb(phone, "phone", limit)
 
         if not uuids:
             return SearchResponse(
@@ -910,17 +951,18 @@ async def search_by_phone(
 @app.get("/api/v1/customers/search/category", response_model=SearchResponse)
 async def search_by_category(
     category: str = Query(..., description="Customer category to search"),
-    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
+    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)"),
+    limit: int = Query(100, description="Maximum number of results to return (1-10000)", ge=1, le=10000)
 ):
     """Search customers by category (plaintext metadata field - not encrypted)"""
     request_start = time.time()
 
     try:
-        logger.info(f"Searching for category: {category} (mode: {mode})")
+        logger.info(f"Searching for category: {category} (mode: {mode}, limit: {limit})")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, fetch_time = fetch_and_decrypt_from_mongodb(category, "category")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(category, "category", limit)
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
@@ -936,7 +978,7 @@ async def search_by_category(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(category, "category")
+        uuids, mongodb_time = search_mongodb(category, "category", limit)
 
         if not uuids:
             return SearchResponse(
@@ -977,17 +1019,18 @@ async def search_by_category(
 @app.get("/api/v1/customers/search/status", response_model=SearchResponse)
 async def search_by_status(
     status: str = Query(..., description="Customer status to search"),
-    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
+    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)"),
+    limit: int = Query(100, description="Maximum number of results to return (1-10000)", ge=1, le=10000)
 ):
     """Search customers by status (plaintext metadata field - not encrypted)"""
     request_start = time.time()
 
     try:
-        logger.info(f"Searching for status: {status} (mode: {mode})")
+        logger.info(f"Searching for status: {status} (mode: {mode}, limit: {limit})")
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, fetch_time = fetch_and_decrypt_from_mongodb(status, "status")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb(status, "status", limit)
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
@@ -1003,7 +1046,7 @@ async def search_by_status(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb(status, "status")
+        uuids, mongodb_time = search_mongodb(status, "status", limit)
 
         if not uuids:
             return SearchResponse(
@@ -1048,7 +1091,8 @@ async def search_by_status(
 @app.get("/api/v1/customers/search/email/prefix", response_model=SearchResponse)
 async def search_by_email_prefix(
     prefix: str = Query(..., description="Email prefix to search", min_length=1),
-    mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
+    mode: str = Query("hybrid", description="Search mode: \'hybrid\' (MongoDB+AlloyDB) or \'mongodb_only\' (MongoDB decrypt only)"),
+    limit: int = Query(100, description="Maximum number of results to return (1-10000)", ge=1, le=10000)
 ):
     """
     Search customers by email prefix (encrypted prefix search)
@@ -1065,7 +1109,7 @@ async def search_by_email_prefix(
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(prefix, "email", "prefix")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(prefix, "email", "prefix", limit)
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
@@ -1081,7 +1125,7 @@ async def search_by_email_prefix(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb_preview(prefix, "email", "prefix")
+        uuids, mongodb_time = search_mongodb_preview(prefix, "email", "prefix", limit)
 
         if not uuids:
             return SearchResponse(
@@ -1197,6 +1241,8 @@ async def search_by_email_suffix(
 async def search_by_email_substring(
     substring: str = Query(..., description="Email substring to search", min_length=2, max_length=10),
     mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
+,
+    limit: int = Query(100, description="Maximum number of results to return (1-10000)", ge=1, le=10000)
 ):
     """
     Search customers by email substring (encrypted substring search)
@@ -1217,7 +1263,7 @@ async def search_by_email_substring(
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(substring, "email", "substring")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(substring, "email", "substring", limit)
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
@@ -1233,7 +1279,7 @@ async def search_by_email_substring(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb_preview(substring, "email", "substring")
+        uuids, mongodb_time = search_mongodb_preview(substring, "email", "substring", limit)
 
         if not uuids:
             return SearchResponse(
@@ -1423,6 +1469,8 @@ async def search_by_name_suffix(
 async def search_by_name_substring(
     substring: str = Query(..., description="Name substring to search", min_length=2, max_length=10),
     mode: str = Query("hybrid", description="Search mode: 'hybrid' (MongoDB+AlloyDB) or 'mongodb_only' (MongoDB decrypt only)")
+,
+    limit: int = Query(100, description="Maximum number of results to return (1-10000)", ge=1, le=10000)
 ):
     """
     Search customers by name substring (encrypted substring search)
@@ -1443,7 +1491,7 @@ async def search_by_name_substring(
 
         # MongoDB-only mode
         if mode == "mongodb_only":
-            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(substring, "name", "substring")
+            customers, fetch_time = fetch_and_decrypt_from_mongodb_preview(substring, "name", "substring", limit)
             return SearchResponse(
                 success=True,
                 data=[CustomerResponse(**c) for c in customers],
@@ -1459,7 +1507,7 @@ async def search_by_name_substring(
             )
 
         # Hybrid mode
-        uuids, mongodb_time = search_mongodb_preview(substring, "name", "substring")
+        uuids, mongodb_time = search_mongodb_preview(substring, "name", "substring", limit)
 
         if not uuids:
             return SearchResponse(
@@ -1547,11 +1595,7 @@ async def get_customers_by_tier(tier: str):
 
             customers = []
             for row in results:
-                customer = dict(row)
-                if customer.get('address') and isinstance(customer['address'], str):
-                    customer['address'] = json.loads(customer['address'])
-                if customer.get('preferences') and isinstance(customer['preferences'], str):
-                    customer['preferences'] = json.loads(customer['preferences'])
+                customer = parse_json_fields(dict(row))
                 customers.append(customer)
 
         total_time = (time.time() - request_start) * 1000
