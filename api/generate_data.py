@@ -494,19 +494,103 @@ def insert_alloydb_data(conn, customers):
 
     print_success(f"AlloyDB: {customer_count} total customers")
 
+def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total_batches):
+    """Insert a batch into both databases and validate consistency"""
+    print_info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} records)...")
+
+    mongo_collection = mongo_db["customers"]
+    alloydb_cursor = alloydb_conn.cursor()
+
+    # Track successful inserts
+    mongo_inserted = []
+    alloydb_inserted = []
+
+    for customer in batch:
+        # Insert into MongoDB
+        try:
+            doc = {
+                "alloy_record_id": customer["id"],
+                "searchable_name": customer["full_name"],
+                "searchable_email": customer["email"],
+                "searchable_phone": customer["phone"],
+                "metadata": {
+                    "category": customer["category"],
+                    "status": customer["status"],
+                    "tier": customer["tier"],
+                    "loyalty_points": customer["loyalty_points"],
+                    "last_purchase_date": customer["last_purchase_date"],
+                    "lifetime_value": str(customer["lifetime_value"])
+                },
+                "address": customer["address"],
+                "preferences": customer["preferences"],
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc)
+            }
+            mongo_collection.insert_one(doc)
+            mongo_inserted.append(customer["id"])
+        except Exception as e:
+            print_warning(f"MongoDB insert failed for {customer['id']}: {e}")
+            # If MongoDB fails, skip this record entirely
+            continue
+
+        # Insert into AlloyDB (only if MongoDB succeeded)
+        try:
+            alloydb_cursor.execute(
+                """
+                INSERT INTO customers (id, full_name, email, phone, address, preferences, tier, category, status, loyalty_points, last_purchase_date, lifetime_value)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    customer["id"],
+                    customer["full_name"],
+                    customer["email"],
+                    customer["phone"],
+                    json.dumps({
+                        "street": customer["address"],
+                        "city": customer["city"],
+                        "state": customer["state"],
+                        "zip_code": customer["zip_code"]
+                    }),
+                    customer["preferences"],
+                    customer["tier"],
+                    customer["category"],
+                    customer["status"],
+                    customer["loyalty_points"],
+                    customer["last_purchase_date"],
+                    customer["lifetime_value"]
+                )
+            )
+            alloydb_inserted.append(customer["id"])
+        except Exception as e:
+            print_warning(f"AlloyDB insert failed for {customer['id']}: {e}")
+            # Rollback MongoDB insert if AlloyDB fails
+            print_warning(f"Rolling back MongoDB insert for {customer['id']}")
+            mongo_collection.delete_one({"alloy_record_id": customer["id"]})
+            mongo_inserted.remove(customer["id"])
+
+    # Commit AlloyDB transaction
+    alloydb_conn.commit()
+    alloydb_cursor.close()
+
+    # Validate consistency
+    if len(mongo_inserted) != len(alloydb_inserted):
+        print_error(f"Inconsistency detected! MongoDB: {len(mongo_inserted)}, AlloyDB: {len(alloydb_inserted)}")
+        print_error(f"Difference: {set(mongo_inserted) ^ set(alloydb_inserted)}")
+        return False
+
+    print_success(f"Batch {batch_num}/{total_batches}: Successfully inserted {len(mongo_inserted)} records into both databases")
+    return True
+
 def main():
-    """Main entry point"""
+    """Main entry point with batch processing and validation"""
     parser = argparse.ArgumentParser(description="Generate POC test data - appends additional data to existing datasets")
     parser.add_argument('--count', type=int, default=10000, help='Number of customers to generate (default: 10000)')
+    parser.add_argument('--batch-size', type=int, default=100, help='Batch size for inserts (default: 100)')
     args = parser.parse_args()
 
     print_header("POC Data Generation")
-    print_info(f"Generating {args.count} additional customers")
-
-    # Generate data
-    print_info("Generating random customer data...")
-    customers = generate_customer_data(args.count)
-    print_success(f"Generated {len(customers)} customers")
+    print_info(f"Generating {args.count} customers in batches of {args.batch_size}")
 
     # Load encryption keys first (needed for MongoDB client configuration)
     kms_providers, key_ids = load_encryption_keys()
@@ -515,24 +599,72 @@ def main():
     mongo_client, mongo_db = connect_mongodb(kms_providers, key_ids)
     alloydb_conn = connect_alloydb()
 
-    # Insert data (MongoDB driver will automatically encrypt)
-    insert_mongodb_data(mongo_db, key_ids, customers)
-    insert_alloydb_data(alloydb_conn, customers)
+    # Get initial counts
+    mongo_initial = mongo_db["customers"].count_documents({})
+    alloydb_cursor = alloydb_conn.cursor()
+    alloydb_cursor.execute("SELECT COUNT(*) FROM customers")
+    alloydb_initial = alloydb_cursor.fetchone()[0]
+    alloydb_cursor.close()
+
+    print_info(f"Initial counts - MongoDB: {mongo_initial}, AlloyDB: {alloydb_initial}")
+
+    # Process in batches
+    total_inserted = 0
+    total_batches = (args.count + args.batch_size - 1) // args.batch_size
+
+    print_header("Batch Processing with Validation")
+
+    for batch_num in range(1, total_batches + 1):
+        # Calculate batch size for this iteration
+        remaining = args.count - total_inserted
+        current_batch_size = min(args.batch_size, remaining)
+
+        # Generate batch data
+        batch = generate_customer_data(current_batch_size)
+
+        # Insert with validation
+        success = insert_batch_with_validation(
+            mongo_db, alloydb_conn, batch, batch_num, total_batches
+        )
+
+        if not success:
+            print_error("Batch processing failed. Stopping.")
+            break
+
+        total_inserted += len(batch)
+
+    # Get final counts and validate
+    print_header("Final Validation")
+
+    mongo_final = mongo_db["customers"].count_documents({})
+    alloydb_cursor = alloydb_conn.cursor()
+    alloydb_cursor.execute("SELECT COUNT(*) FROM customers")
+    alloydb_final = alloydb_cursor.fetchone()[0]
+    alloydb_cursor.close()
+
+    print_info(f"Final counts - MongoDB: {mongo_final}, AlloyDB: {alloydb_final}")
+    print_info(f"Records added - MongoDB: {mongo_final - mongo_initial}, AlloyDB: {alloydb_final - alloydb_initial}")
+
+    if mongo_final == alloydb_final:
+        print_success("Database consistency validated!")
+    else:
+        print_error(f"Database inconsistency detected! Difference: {abs(mongo_final - alloydb_final)} records")
 
     # Close connections
     mongo_client.close()
     alloydb_conn.close()
 
     print_header("Data Generation Complete!")
-    print_success(f"Successfully generated and inserted test data")
+    print_success(f"Successfully generated and inserted {total_inserted} records")
     print()
     print(f"{Colors.BOLD}Summary:{Colors.ENDC}")
-    print(f"  • Customers: {len(customers)}")
-    print(f"  • MongoDB: Encrypted searchable fields")
-    print(f"  • AlloyDB: Complete customer data (identical to MongoDB decrypted)")
+    print(f"  • Total customers inserted: {total_inserted}")
+    print(f"  • MongoDB total: {mongo_final}")
+    print(f"  • AlloyDB total: {alloydb_final}")
+    print(f"  • Databases consistent: {'Yes' if mongo_final == alloydb_final else 'No'}")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-    print("  1. Run tests: python run_tests.py")
+    print("  1. Run tests: python run_tests.py --iterations 5")
     print("  2. Test API:  http://localhost:8000/docs (API runs in Docker)")
     print()
     print(f"{Colors.BOLD}Mode Switching:{Colors.ENDC}")

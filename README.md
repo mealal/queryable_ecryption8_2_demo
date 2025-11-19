@@ -198,10 +198,12 @@ python deploy.py start
 python deploy.py start --with-denodo
 
 # 2. Generate test data (10,000 customers with encrypted PII)
-python generate_data.py --reset --count 10000
+#    - Batch processing with consistency validation
+#    - Automatic rollback on failures
+python deploy.py generate --count 10000
 
-# 3. Run comprehensive tests
-python run_tests.py
+# 3. Run comprehensive tests with 5 iterations
+python run_tests.py --iterations 5
 ```
 
 **That's it!** The entire POC is deployed with **ZERO manual configuration**.
@@ -284,28 +286,31 @@ python mongodb/setup-encryption.py
 
 ## Data Generation
 
-### Automated Data Generation
+### Automated Data Generation with Consistency Validation
 
 ```bash
 # Generate 10,000 customers (recommended for performance testing)
-python generate_data.py --reset --count 10000
+python deploy.py generate --count 10000
 
 # Generate custom number of customers
-python generate_data.py --count 1000
-
-# Reset and regenerate with default (10,000)
-python generate_data.py --reset
+python deploy.py generate --count 1000
 ```
 
 **This script will:**
-- ✅ Generate random customer data
+- ✅ Generate random customer data in batches (default: 100 per batch)
 - ✅ Encrypt data with Algorithm.INDEXED (phone, category, status)
 - ✅ Encrypt data with Algorithm.TEXTPREVIEW (email, name)
 - ✅ Encrypt non-searchable fields with Algorithm.UNINDEXED
-- ✅ Insert into MongoDB
-- ✅ Insert complete data into AlloyDB
-- ✅ Create orders for each customer
-- ✅ Verify data synchronization
+- ✅ Insert into MongoDB first, then AlloyDB (per record)
+- ✅ Automatic rollback if AlloyDB insert fails
+- ✅ Handle duplicate/unique constraint violations
+- ✅ Validate consistency after each batch
+- ✅ Final validation reports total counts and consistency status
+
+**Batch Processing:**
+- Each batch: Generate → Insert MongoDB → Insert AlloyDB → Validate
+- If AlloyDB fails: Automatically roll back MongoDB insert
+- Ensures both databases have identical data
 
 ---
 
@@ -317,11 +322,8 @@ python generate_data.py --reset
 # Run full test suite with real-time metrics (100 iterations per test)
 python run_tests.py
 
-# Run quick tests only (no performance tests)
-python run_tests.py --quick
-
-# Run performance tests only
-python run_tests.py --performance
+# Run quick tests (5 iterations)
+python run_tests.py --iterations 5
 
 # Run with custom iterations
 python run_tests.py --iterations 200
@@ -331,12 +333,14 @@ python run_tests.py --report my_test_report.html
 ```
 
 **The test script will:**
-- ✅ Run 17 functional tests (health, encrypted searches)
+- ✅ Run 73 functional tests (health, encrypted searches, result size variants)
 - ✅ Test BOTH Hybrid and MongoDB-Only modes
 - ✅ Display real-time metrics during execution
-- ✅ Run 18 performance tests (9 operations × 2 modes) with 100 iterations each
+- ✅ Run 18 performance tests (9 operations × 2 modes) with configurable iterations
 - ✅ Calculate statistics (avg, median, min, max, std dev)
 - ✅ Generate HTML test report with mode comparison charts
+- ✅ Centralized validation logic for consistent pass/fail criteria
+- ✅ Console output matches HTML report duration
 
 **Expected Output:**
 ```
@@ -387,11 +391,11 @@ Phone Equality Search (MongoDB-Only):
 ================================================================================
 
 Results:
-  Total Tests:    17
-  Passed:         17
+  Total Tests:    73
+  Passed:         73
   Failed:         0
   Pass Rate:      100.0%
-  Total Duration: 0.31s
+  Total Duration: 46.79s
 
 ✓ Report generated: test_report.html
 
@@ -776,11 +780,11 @@ curl http://localhost:8000/api/v1/customers/search/email/prefix?prefix=john&mode
 # 1. Deploy everything (starts Docker containers including API)
 python deploy.py start
 
-# 2. Generate 10,000 customers
-python generate_data.py --reset --count 10000
+# 2. Generate 10,000 customers with consistency validation
+python deploy.py generate --count 10000
 
-# 3. Run comprehensive tests (17 functional + 18 performance tests)
-python run_tests.py
+# 3. Run comprehensive tests (73 functional + 18 performance tests)
+python run_tests.py --iterations 5
 
 # 4. View test report
 # Open test_report.html in browser
@@ -791,6 +795,7 @@ python run_tests.py
 ```bash
 python deploy.py start                  # Deploy MongoDB + AlloyDB + API
 python deploy.py start --with-denodo   # Include Denodo Virtual DataPort
+python deploy.py generate --count 10000 # Generate data with consistency validation
 python deploy.py status                 # Check status
 python deploy.py stop                   # Stop containers (auto-detects Denodo)
 python deploy.py restart                # Restart everything
@@ -799,20 +804,11 @@ python deploy.py clean                  # Clean all data (auto-detects Denodo)
 python deploy.py clean --with-denodo    # Explicitly clean including Denodo
 ```
 
-### Data Generation Commands
-
-```bash
-python generate_data.py --reset --count 10000  # Generate 10k customers
-python generate_data.py --count 1000           # Generate 1k customers
-python generate_data.py --reset                # Reset and regenerate (default 10k)
-```
-
 ### Testing Commands
 
 ```bash
 python run_tests.py                   # Full test suite (100 iterations)
-python run_tests.py --quick           # Quick tests only
-python run_tests.py --performance     # Performance tests only
+python run_tests.py --iterations 5    # Quick tests (5 iterations)
 python run_tests.py --iterations 200  # Custom iterations
 ```
 
@@ -825,7 +821,7 @@ docker-compose down
 # Reset everything (WARNING: deletes all data)
 python deploy.py clean
 python deploy.py start
-python generate_data.py --reset --count 10000
+python deploy.py generate --count 10000
 ```
 
 ---

@@ -10,27 +10,36 @@ Usage:
     python run_tests.py --report test_report.html  # Custom report name
 """
 
+# ============================================================================
+# IMPORTS
+# ============================================================================
+
 import requests
-import json
 import time
 import argparse
 import sys
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Tuple
 import statistics
+import random
+import re
+import subprocess
+from datetime import datetime
+from typing import Dict, List
 
-# Import Denodo wrapper
+# Import Denodo wrapper (optional)
 try:
-    from denodo.denodo_wrapper import DenodoClient, format_denodo_response, license_limiter
+    from denodo.denodo_wrapper import DenodoClient, license_limiter
     DENODO_AVAILABLE = True
 except ImportError:
     DENODO_AVAILABLE = False
     license_limiter = None
     print("Warning: Denodo wrapper not found. Denodo tests will be skipped.")
 
-# ANSI color codes
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 class Colors:
+    """ANSI color codes for console output"""
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
     OKCYAN = '\033[96m'
@@ -40,7 +49,7 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
-# Test configuration
+# API Configuration
 API_BASE_URL = "http://localhost:8000"
 DENODO_CLIENT = DenodoClient() if DENODO_AVAILABLE else None
 
@@ -49,48 +58,41 @@ TEST_MODES = ["hybrid", "mongodb_only"]
 if DENODO_AVAILABLE:
     TEST_MODES.append("denodo")
 
+# ============================================================================
+# DATA FETCHING FUNCTIONS
+# ============================================================================
+
 # Fetch real test data from API
 def get_test_data():
     """Fetch real customer values from API for testing
 
     This is NOT part of performance testing - it's just to get valid test data.
-    We fetch a few customers from the API and extract searchable field values.
+    Uses the category search endpoint to get data from MongoDB (not AlloyDB tier endpoint).
     """
     try:
-        # Fetch some customers from AlloyDB to get real values
-        # Using AlloyDB endpoint to get unencrypted data for test setup
-        # Note: category and status are MongoDB-only fields (in metadata), not in AlloyDB
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            port=5432,
-            database="alloydb_poc",
-            user="postgres",
-            password="postgres_password"
+        # Fetch one customer using category search (searches MongoDB encrypted data)
+        # This ensures we get test data that actually exists in MongoDB
+        response = requests.get(
+            f"{API_BASE_URL}/api/v1/customers/search/category",
+            params={"category": "retail", "limit": 1},
+            timeout=5
         )
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, full_name, email, phone, tier, category, status
-            FROM customers
-            ORDER BY RANDOM()
-            LIMIT 1
-        """)
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
 
-        if row:
-            return {
-                "id": row[0],
-                "name": row[1],
-                "email": row[2],
-                "phone": row[3],
-                "tier": row[4] or "gold",
-                "category": row[5],
-                "status": row[6]
-            }
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success') and data.get('data') and len(data['data']) > 0:
+                customer = data['data'][0]
+                return {
+                    "id": customer.get('customer_id'),
+                    "name": customer.get('full_name'),
+                    "email": customer.get('email'),
+                    "phone": customer.get('phone'),
+                    "tier": customer.get('tier', 'gold'),
+                    "category": customer.get('category', 'retail'),
+                    "status": customer.get('status', 'active')
+                }
     except Exception as e:
-        print(f"Warning: Could not fetch test data from database: {e}")
+        print(f"Warning: Could not fetch test data from API: {e}")
         return None
 
 def get_test_data_pool(sample_size=200):
@@ -103,53 +105,55 @@ def get_test_data_pool(sample_size=200):
         Dictionary with lists of values for each field type
     """
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            port=5432,
-            database="alloydb_poc",
-            user="postgres",
-            password="postgres_password"
+        # Use category endpoint to fetch multiple customers (retail category typically has many)
+        response = requests.get(
+            f"{API_BASE_URL}/api/v1/customers/search/category",
+            params={"category": "retail", "limit": min(sample_size, 10000)},
+            timeout=30
         )
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT full_name, email, phone, category, status
-            FROM customers
-            ORDER BY RANDOM()
-            LIMIT {sample_size}
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
 
-        if rows:
-            pool = {
-                "names": [],
-                "emails": [],
-                "phones": [],
-                "categories": [],
-                "statuses": [],
-                "email_prefixes": [],
-                "name_substrings": []
-            }
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success') and data.get('data'):
+                customers = data['data']
 
-            for row in rows:
-                full_name, email, phone, category, status = row
-                pool["names"].append(full_name)
-                pool["emails"].append(email)
-                pool["phones"].append(phone)
-                pool["categories"].append(category)
-                pool["statuses"].append(status)
+                pool = {
+                    "names": [],
+                    "emails": [],
+                    "phones": [],
+                    "categories": [],
+                    "statuses": [],
+                    "email_prefixes": [],
+                    "name_substrings": []
+                }
 
-                # Extract prefixes and substrings
-                if email:
-                    pool["email_prefixes"].append(email.split('@')[0][:4])
-                if full_name and ' ' in full_name:
-                    pool["name_substrings"].append(full_name.split()[0][:10] if len(full_name.split()[0]) > 10 else full_name.split()[0])
+                for customer in customers:
+                    full_name = customer.get('full_name')
+                    email = customer.get('email')
+                    phone = customer.get('phone')
+                    category = customer.get('category')
+                    status = customer.get('status')
 
-            return pool
+                    if full_name:
+                        pool["names"].append(full_name)
+                    if email:
+                        pool["emails"].append(email)
+                    if phone:
+                        pool["phones"].append(phone)
+                    if category:
+                        pool["categories"].append(category)
+                    if status:
+                        pool["statuses"].append(status)
+
+                    # Extract prefixes and substrings
+                    if email:
+                        pool["email_prefixes"].append(email.split('@')[0][:4])
+                    if full_name and ' ' in full_name:
+                        pool["name_substrings"].append(full_name.split()[0][:10] if len(full_name.split()[0]) > 10 else full_name.split()[0])
+
+                return pool
     except Exception as e:
-        print(f"Warning: Could not fetch test data pool from database: {e}")
+        print(f"Warning: Could not fetch test data pool from API: {e}")
         return None
 
 # Try to get real test data, otherwise use defaults
@@ -172,8 +176,26 @@ else:
     TEST_CATEGORY = "retail"  # Options: retail, enterprise, government
     TEST_STATUS = "active"    # Options: active, inactive, pending
 
+# ============================================================================
+# METRICS COLLECTION
+# ============================================================================
+
 class TestMetrics:
-    """Track test metrics in real-time"""
+    """
+    Track test metrics in real-time
+
+    This class collects all test results and performance metrics during test execution.
+    Data is later used to generate the HTML report with:
+    - Test summary (pass/fail counts, pass rate)
+    - Individual test results (name, status, duration, timestamp)
+    - Performance metrics (avg, median, stddev by mode)
+    - Mode comparison tables (Hybrid vs MongoDB-Only)
+
+    Key Methods:
+    - add_result(): Store individual test result with encryption type
+    - add_performance_data(): Store performance metrics for report aggregation
+    - generate_html_report(): Generate custom HTML report from collected data
+    """
 
     def __init__(self):
         self.tests_run = 0
@@ -181,8 +203,8 @@ class TestMetrics:
         self.tests_failed = 0
         self.total_duration = 0
         self.total_benchmark_duration = 0
-        self.test_results = []
-        self.performance_data = []
+        self.test_results = []           # List of all test results
+        self.performance_data = []       # List of performance metrics with encryption types
 
     def add_result(self, test_name, passed, duration, details=None, encryption_type=None):
         """Add test result"""
@@ -224,6 +246,10 @@ class TestMetrics:
             "total_duration": self.total_duration
         }
 
+# ============================================================================
+# CONSOLE OUTPUT HELPERS
+# ============================================================================
+
 def print_header(text):
     print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*80}{Colors.ENDC}")
     print(f"{Colors.HEADER}{Colors.BOLD}{text:^80}{Colors.ENDC}")
@@ -247,6 +273,43 @@ def print_warning(text):
 def print_metric(label, value, unit=""):
     """Print real-time metric"""
     print(f"  {Colors.OKCYAN}{label:.<40} {value:>10.2f} {unit}{Colors.ENDC}")
+
+# ============================================================================
+# DATA VALIDATION
+# ============================================================================
+
+def validate_result_count(results_count, expected_count, test_name):
+    """
+    Validate result count against expected count with standardized logic.
+
+    Returns: (passed, should_count_performance, status_message)
+
+    Logic:
+    1. Exact match (results_count == expected_count): PASS, count performance
+    2. Zero results: FAIL, don't count performance
+    3. More results than expected: FAIL, don't count performance
+    4. Fewer results than expected (but > 0): PASS with NA status, don't count performance
+    """
+    if expected_count is None:
+        # No limit specified, any non-zero result is good
+        if results_count > 0:
+            return True, True, None
+        else:
+            return False, False, "No results found"
+
+    if results_count == expected_count:
+        # Exact match - perfect
+        return True, True, None
+    elif results_count == 0:
+        # No results - fail
+        return False, False, f"Expected {expected_count} results, got 0"
+    elif results_count > expected_count:
+        # More than expected - API limit not working, fail
+        return False, False, f"Expected {expected_count} results, got {results_count} (API limit not working)"
+    else:
+        # Less than expected but > 0 - insufficient data, pass with NA
+        print_info(f"Expected {expected_count} results, got {results_count} (insufficient test data - NA)")
+        return True, False, "NA"
 
 def validate_customer_response(customer, mode="hybrid"):
     """Validate that customer response contains all expected fields"""
@@ -299,6 +362,10 @@ def validate_customer_response(customer, mode="hybrid"):
         return False
 
     return True
+
+# ============================================================================
+# TEST FUNCTIONS
+# ============================================================================
 
 def test_health_check(metrics):
     """Test 1: Health Check"""
@@ -365,7 +432,10 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid", limit
                 api_total_time = test_metrics['total_ms']
                 client_time = duration * 1000
 
-                if data['data']:
+                # Validate result count using centralized logic
+                passed, should_count_perf, status_msg = validate_result_count(results_count, limit, test_name)
+
+                if results_count > 0:
                     customer = data['data'][0]
                     print_success(f"Found customer: {customer.get('full_name')}")
                     print_metric("Results Returned", results_count, "records")
@@ -382,44 +452,8 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid", limit
                     print_metric("API Total", api_total_time, "ms")
                     print_metric("Client Total", client_time, "ms")
 
-                    # Validate expected result count if limit is specified
-                    if limit is not None and results_count != limit:
-                        # If we got fewer results than expected, it's due to insufficient data (NA)
-                        if results_count < limit:
-                            print_info(f"Expected {limit} results, got {results_count} (insufficient test data - NA)")
-                            metrics.add_result(test_name, True, duration, {
-                                "customer": customer,
-                                "metrics": test_metrics,
-                                "mode": mode,
-                                "results_count": results_count,
-                                "expected_count": limit,
-                                "status": "NA"
-                            })
-                            return True  # Pass with NA status
-                        else:
-                            # If we got MORE results than expected, that's an API bug
-                            print_error(f"Expected {limit} results, but got {results_count} (API limit not working)")
-                            metrics.add_result(test_name, False, duration, {
-                                "customer": customer,
-                                "metrics": test_metrics,
-                                "mode": mode,
-                                "results_count": results_count,
-                                "expected_count": limit,
-                                "error": "API returned more results than limit"
-                            })
-                            return False
-
                     # Validate customer response
-                    if validate_customer_response(customer, mode):
-                        print_success("Customer data validation passed")
-                        metrics.add_result(test_name, True, duration, {
-                            "customer": customer,
-                            "metrics": test_metrics,
-                            "mode": mode,
-                            "results_count": results_count,
-                            "expected_count": limit
-                        })
-                    else:
+                    if not validate_customer_response(customer, mode):
                         print_error("Customer data validation failed")
                         metrics.add_result(test_name, False, duration, {
                             "customer": customer,
@@ -428,19 +462,51 @@ def test_encrypted_search(metrics, field, value, test_name, mode="hybrid", limit
                             "error": "Validation failed"
                         })
                         return False
+
+                    # Record result based on count validation
+                    if passed:
+                        print_success("Customer data validation passed")
+                        test_details = {
+                            "customer": customer,
+                            "metrics": test_metrics,
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit
+                        }
+                        if status_msg:
+                            test_details["status"] = status_msg
+
+                        metrics.add_result(test_name, True, duration, test_details)
+
+                        # Only add performance data if should_count_perf is True
+                        if should_count_perf:
+                            metrics.add_performance_data(f"Encrypted {field.title()} Search ({mode})", test_metrics)
+
+                        return True
+                    else:
+                        print_error(status_msg)
+                        metrics.add_result(test_name, False, duration, {
+                            "customer": customer,
+                            "metrics": test_metrics,
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit,
+                            "error": status_msg
+                        })
+                        return False
                 else:
+                    # Zero results - always a failure
                     print_error(f"Query executed but returned 0 results - expected to find data")
                     print_metric("MongoDB Search", test_metrics['mongodb_search_ms'], "ms")
                     print_metric("Client Time", duration * 1000, "ms")
                     metrics.add_result(test_name, False, duration, {
                         "metrics": test_metrics,
                         "mode": mode,
+                        "results_count": 0,
+                        "expected_count": limit,
                         "error": "No results found"
                     })
                     return False
-
-                metrics.add_performance_data(f"Encrypted {field.title()} Search ({mode})", test_metrics)
-                return True
             else:
                 print_error("API returned success=false")
                 metrics.add_result(test_name, False, duration)
@@ -482,6 +548,9 @@ def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid", limit=N
                 api_total_time = data['metrics']['total_ms']
                 client_time = duration * 1000
 
+                # Validate result count using centralized logic
+                passed, should_count_perf, status_msg = validate_result_count(results_count, limit, test_name)
+
                 # Get appropriate MongoDB time based on mode
                 if mode == "hybrid":
                     mongodb_time = data['metrics']['mongodb_search_ms']
@@ -496,49 +565,58 @@ def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid", limit=N
                 else:
                     print_info(f"  MongoDB Decrypt: {mongodb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
 
-                # Validate expected result count if limit is specified
-                if limit is not None and results_count != limit:
-                    # If we got fewer results than expected, it's due to insufficient data (NA)
-                    if results_count < limit:
-                        print_info(f"Expected {limit} results, got {results_count} (insufficient test data - NA)")
-                        metrics.add_result(test_name, True, duration, {
-                            "mode": mode,
-                            "results_count": results_count,
-                            "expected_count": limit,
-                            "status": "NA",
-                            "metrics": data['metrics']
-                        })
-                        return True  # Pass with NA status
-                    else:
-                        # If we got MORE results than expected, that's an API bug
-                        print_error(f"Expected {limit} results, but got {results_count} (API limit not working)")
-                        metrics.add_result(test_name, False, duration, {
-                            "mode": mode,
-                            "results_count": results_count,
-                            "expected_count": limit,
-                            "error": "API returned more results than limit",
-                            "metrics": data['metrics']
-                        })
-                        return False
-
-                # Validate first customer - require at least one result
-                if not data['data']:
+                # Handle zero results
+                if results_count == 0:
                     print_error(f"{test_name} - Found 0 results (expected data)")
-                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "No results"})
+                    metrics.add_result(test_name, False, duration, {
+                        "mode": mode,
+                        "results_count": 0,
+                        "expected_count": limit,
+                        "error": "No results",
+                        "metrics": data['metrics']
+                    })
                     return False
 
-                if validate_customer_response(data['data'][0], mode):
+                # Validate customer response
+                if not validate_customer_response(data['data'][0], mode):
+                    print_error("Customer data validation failed")
+                    metrics.add_result(test_name, False, duration, {
+                        "mode": mode,
+                        "results_count": results_count,
+                        "expected_count": limit,
+                        "error": "Validation failed",
+                        "metrics": data['metrics']
+                    })
+                    return False
+
+                # Record result based on count validation
+                if passed:
                     print_success("Customer data validation passed")
-                    metrics.add_result(test_name, True, duration, {
+                    test_details = {
                         "mode": mode,
                         "results_count": results_count,
                         "expected_count": limit,
                         "metrics": data['metrics']
-                    })
+                    }
+                    if status_msg:
+                        test_details["status"] = status_msg
+
+                    metrics.add_result(test_name, True, duration, test_details)
+
+                    # Only add performance data if should_count_perf is True
+                    if should_count_perf:
+                        metrics.add_performance_data(test_name, data['metrics'])
+
                     return True
                 else:
-                    print_error("Customer data validation failed")
-                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "Validation failed"})
+                    print_error(status_msg)
+                    metrics.add_result(test_name, False, duration, {
+                        "mode": mode,
+                        "results_count": results_count,
+                        "expected_count": limit,
+                        "error": status_msg,
+                        "metrics": data['metrics']
+                    })
                     return False
             else:
                 print_error(f"{test_name} - API returned success=false")
@@ -648,55 +726,70 @@ def test_substring_search(metrics, field, substring, test_name, mode="hybrid", l
                     mongodb_time = data['metrics'].get('mongodb_decrypt_ms', 0)
                     alloydb_time = 0
 
-                print_success(f"{test_name} - Found {results_count} results")
-                if mode == "hybrid":
-                    print_info(f"  MongoDB Search: {mongodb_time:.2f}ms | AlloyDB: {alloydb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
-                else:
-                    print_info(f"  MongoDB Decrypt: {mongodb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
+                test_metrics = {
+                    'mongodb_search_ms' if mode == "hybrid" else 'mongodb_decrypt_ms': mongodb_time,
+                    'alloydb_fetch_ms': alloydb_time,
+                    'total_ms': api_total_time,
+                    'client_ms': client_time
+                }
 
-                # Validate expected result count if limit is specified
-                if limit is not None and results_count != limit:
-                    # If we got fewer results than expected, it's due to insufficient data (NA)
-                    if results_count < limit:
-                        print_info(f"Expected {limit} results, got {results_count} (insufficient test data - NA)")
-                        metrics.add_result(test_name, True, duration, {
-                            "mode": mode,
-                            "results_count": results_count,
-                            "expected_count": limit,
-                            "status": "NA",
-                            "metrics": data['metrics']
-                        })
-                        return True  # Pass with NA status
+                # Validate result count using centralized logic
+                passed, should_count_perf, status_msg = validate_result_count(results_count, limit, test_name)
+
+                if results_count > 0:
+                    customer = data['data'][0]
+                    print_success(f"{test_name} - Found {results_count} results")
+                    if mode == "hybrid":
+                        print_info(f"  MongoDB Search: {mongodb_time:.2f}ms | AlloyDB: {alloydb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
                     else:
-                        # If we got MORE results than expected, that's an API bug
-                        print_error(f"Expected {limit} results, but got {results_count} (API limit not working)")
-                        metrics.add_result(test_name, False, duration, {
-                            "mode": mode,
-                            "results_count": results_count,
-                            "expected_count": limit,
-                            "error": "API returned more results than limit",
-                            "metrics": data['metrics']
-                        })
+                        print_info(f"  MongoDB Decrypt: {mongodb_time:.2f}ms | API Total: {api_total_time:.2f}ms | Client: {client_time:.2f}ms")
+
+                    # Validate customer response
+                    if not validate_customer_response(customer, mode):
+                        print_error("Customer data validation failed")
+                        metrics.add_result(test_name, False, duration, {"mode": mode, "error": "Validation failed"})
                         return False
 
-                # Validate first customer - require at least one result
-                if not data['data']:
-                    print_error(f"{test_name} - Found 0 results (expected data)")
-                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "No results"})
-                    return False
+                    # Record result based on count validation
+                    if passed:
+                        print_success("Customer data validation passed")
+                        test_details = {
+                            "customer": customer,
+                            "metrics": test_metrics,
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit
+                        }
+                        if status_msg:
+                            test_details["status"] = status_msg
 
-                if validate_customer_response(data['data'][0], mode):
-                    print_success("Customer data validation passed")
-                    metrics.add_result(test_name, True, duration, {
-                        "mode": mode,
-                        "results_count": results_count,
-                        "expected_count": limit,
-                        "metrics": data['metrics']
-                    })
-                    return True
+                        metrics.add_result(test_name, True, duration, test_details)
+
+                        # Only add performance data if should_count_perf is True
+                        if should_count_perf:
+                            metrics.add_performance_data(f"Encrypted {field.title()} Substring Search ({mode})", test_metrics)
+
+                        return True
+                    else:
+                        print_error(status_msg)
+                        metrics.add_result(test_name, False, duration, {
+                            "customer": customer,
+                            "metrics": test_metrics,
+                            "mode": mode,
+                            "results_count": results_count,
+                            "expected_count": limit,
+                            "error": status_msg
+                        })
+                        return False
                 else:
-                    print_error("Customer data validation failed")
-                    metrics.add_result(test_name, False, duration, {"mode": mode, "error": "Validation failed"})
+                    # Zero results
+                    print_error(f"{test_name} - Found 0 results (expected data)")
+                    metrics.add_result(test_name, False, duration, {
+                        "mode": mode,
+                        "results_count": 0,
+                        "expected_count": limit,
+                        "error": "No results"
+                    })
                     return False
             else:
                 print_error(f"{test_name} - API returned success=false")
@@ -796,6 +889,9 @@ def test_denodo_search(metrics, search_type, search_param, test_name, data_sourc
         metrics.add_result(test_name, False, duration, {"error": str(e), "mode": mode})
         return False
 
+# ============================================================================
+# PERFORMANCE TESTING
+# ============================================================================
 
 def run_performance_tests(metrics, iterations=10):
     """Run performance tests with multiple iterations for all encrypted and AlloyDB operations
@@ -865,7 +961,6 @@ def run_performance_tests(metrics, iterations=10):
                         test_value = test_pool[pool_key][i % len(test_pool[pool_key])]
                     else:
                         # Pool too small, pick randomly
-                        import random
                         test_value = random.choice(test_pool[pool_key])
 
                     # Special processing for certain test types
@@ -961,6 +1056,10 @@ def run_performance_tests(metrics, iterations=10):
             print(f"\n  {Colors.FAIL}No successful iterations!{Colors.ENDC}")
 
     return results
+
+# ============================================================================
+# HTML REPORT GENERATION
+# ============================================================================
 
 def generate_html_report(metrics, perf_results, output_file, data_stats=None, iterations=None):
     """Generate HTML test report"""
@@ -1259,7 +1358,6 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None, it
             encryption_type_map[perf_data['operation']] = perf_data.get('encryption_type')
 
         # Group by base operation name
-        import re
         grouped_results = {}
         for operation, stats in perf_results.items():
             # Extract base name and mode
@@ -1475,10 +1573,12 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None, it
 
     print_success(f"Report generated: {output_file}")
 
+# ============================================================================
+# TEST SUITE ORGANIZATION
+# ============================================================================
+
 def validate_data_availability():
     """Validate that sufficient test data exists before running tests"""
-    import psycopg2
-
     print_header("Validating Test Data")
 
     try:
@@ -1533,7 +1633,6 @@ def validate_data_availability():
 
 def check_denodo_running():
     """Check if Denodo Docker container is running"""
-    import subprocess
     try:
         result = subprocess.run(
             "docker ps --filter name=poc_denodo --format '{{.Names}}'",
@@ -1673,6 +1772,10 @@ def run_preview_feature_tests(metrics):
     test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (MongoDB-Only)", "mongodb_only")
     test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (MongoDB-Only)", "mongodb_only")
 
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Run POC tests with real-time metrics")
@@ -1763,6 +1866,9 @@ def main():
     # Performance Tests
     perf_results = run_performance_tests(metrics, args.iterations)
 
+    # Add functional test duration to total benchmark duration
+    metrics.total_benchmark_duration += metrics.total_duration
+
     # Generate Report
     print_header("Test Summary")
 
@@ -1773,7 +1879,7 @@ def main():
     print(f"  Passed:         {Colors.OKGREEN}{summary['passed']}{Colors.ENDC}")
     print(f"  Failed:         {Colors.FAIL if summary['failed'] > 0 else Colors.OKGREEN}{summary['failed']}{Colors.ENDC}")
     print(f"  Pass Rate:      {summary['pass_rate']:.1f}%")
-    print(f"  Total Duration: {summary['total_duration']:.2f}s")
+    print(f"  Total Duration: {metrics.total_benchmark_duration:.2f}s")
 
     # Generate HTML report
     generate_html_report(metrics, perf_results, args.report, data_stats, args.iterations)

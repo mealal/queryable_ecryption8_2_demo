@@ -930,12 +930,8 @@ def deploy_all():
         if not api_ready:
             print_warning("API health check timed out, but continuing...")
 
-    # Generate initial test data (100 records)
-    if not state['data_exists']:
-        if not generate_initial_data(count=100):
-            print_warning("Initial data generation failed, but deployment can continue")
-    else:
-        print_info("Data already exists, skipping initial data generation")
+    # Data generation is now manual - users should run: python deploy.py generate --count 10000
+    print_info("Note: Data generation is manual. Run 'python deploy.py generate --count 10000' to populate databases")
 
     # Initialize Denodo (optional - won't fail deployment if skipped)
     if DEPLOY_DENODO:
@@ -955,8 +951,8 @@ def deploy_all():
         print("  • Denodo:   http://localhost:9090 (if initialized)")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-    print("  1. Run tests:                python run_tests.py")
-    print("  2. Generate more data:       python deploy.py generate --count 10000")
+    print("  1. Generate test data:       python deploy.py generate --count 10000")
+    print("  2. Run tests:                python run_tests.py --iterations 5")
     print("  3. View test report:         Open test_report.html in browser (generated after tests)")
 
 def main():

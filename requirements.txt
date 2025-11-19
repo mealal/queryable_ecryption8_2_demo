@@ -1,16 +1,9 @@
 # Python dependencies for POC deployment and testing scripts
-# These are required for: deploy.py, generate_data.py, run_tests.py
+# Required for: deploy.py, run_tests.py
 #
-# Note: API dependencies are in api/requirements.txt
-
-# MongoDB with Queryable Encryption support (for generate_data.py)
-# PyMongo 4.15+ required for prefix/suffix/substring preview query types
-# pymongocrypt 1.16+ required for text query preview features
-pymongo[encryption]>=4.15.0
-pymongocrypt>=1.16.0
-
-# PostgreSQL / AlloyDB (for generate_data.py)
-psycopg2-binary>=2.9.10
+# Note:
+# - deploy.py uses only Python standard library (no external dependencies)
+# - API and data generation run inside Docker containers (see api/requirements.txt)
 
 # REST API testing (for run_tests.py)
-requests==2.31.0
+requests>=2.31.0
