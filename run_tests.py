@@ -1218,6 +1218,18 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None, it
             background: #f5f5f5;
             color: #666;
         }}
+        .comparison-table {{
+            margin-bottom: 20px;
+        }}
+        .comparison-table td:first-child {{
+            text-align: left;
+        }}
+        h3 {{
+            color: #555;
+            margin-top: 25px;
+            margin-bottom: 10px;
+            font-size: 18px;
+        }}
     </style>
 </head>
 <body>
@@ -1453,38 +1465,11 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None, it
 
             all_tests[base_name][mode] = total_time
 
-        # Generate Mode Comparison table with header
+        # Generate Mode Comparison tables - split by result set size
         html += """
         <h2>Mode Comparison by Result Set Size</h2>
         <p>Performance comparison between Hybrid and MongoDB-Only modes across different result set sizes.</p>
-
-        <table style="margin-bottom: 30px;">
-            <thead>
-                <tr>
-                    <th rowspan="2">Test Type</th>
-                    <th rowspan="2">Encryption Type</th>
-                    <th colspan="3">1 Record</th>
-                    <th colspan="3">100 Records</th>
-                    <th colspan="3">500 Records</th>
-                    <th colspan="3">1000 Records</th>
-                </tr>
-                <tr>
-                    <th>Hybrid (ms)</th>
-                    <th>MongoDB (ms)</th>
-                    <th>Diff (ms)</th>
-                    <th>Hybrid (ms)</th>
-                    <th>MongoDB (ms)</th>
-                    <th>Diff (ms)</th>
-                    <th>Hybrid (ms)</th>
-                    <th>MongoDB (ms)</th>
-                    <th>Diff (ms)</th>
-                    <th>Hybrid (ms)</th>
-                    <th>MongoDB (ms)</th>
-                    <th>Diff (ms)</th>
-                </tr>
-            </thead>
-            <tbody>
-            """
+        """
 
         # First, collect all unique test base names from all_tests
         # This includes both regular tests and result-size variant tests
@@ -1499,24 +1484,37 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None, it
                 # Regular test like "Category Equality Search"
                 all_base_names.add(test_name)
 
-        # Generate rows for all unique base names
-        for base_name in sorted(all_base_names):
-            # Get encryption type from encryption_type_map
-            # Try to find it using the base_name with (Hybrid) or (MongoDB-Only) suffix
-            operation_with_mode = f"{base_name} (Hybrid)" if f"{base_name} (Hybrid)" in encryption_type_map else f"{base_name} (MongoDB-Only)"
-            encryption_type = encryption_type_map.get(operation_with_mode, 'none')
+        # Generate separate table for each result set size
+        for count in [1, 100, 500, 1000]:
+            record_label = "Record" if count == 1 else "Records"
+            html += f"""
+            <h3>{count} {record_label}</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Test Type</th>
+                        <th>Encryption Type</th>
+                        <th>Hybrid (ms)</th>
+                        <th>MongoDB (ms)</th>
+                        <th>Diff (ms)</th>
+                    </tr>
+                </thead>
+                <tbody>
+            """
 
-            # Generate badge HTML
-            if encryption_type and encryption_type != 'none':
-                badge_class = f"badge-{encryption_type}"
-                badge_html = f'<span class="encryption-badge {badge_class}">{encryption_type}</span>'
-            else:
-                badge_html = '<span class="encryption-badge badge-none">-</span>'
+            # Generate rows for all unique base names (show ALL tests, even if no data)
+            for base_name in sorted(all_base_names):
+                # Get encryption type from encryption_type_map
+                operation_with_mode = f"{base_name} (Hybrid)" if f"{base_name} (Hybrid)" in encryption_type_map else f"{base_name} (MongoDB-Only)"
+                encryption_type = encryption_type_map.get(operation_with_mode, 'none')
 
-            html += f"<tr><td><strong>{base_name}</strong></td><td>{badge_html}</td>"
+                # Generate badge HTML
+                if encryption_type and encryption_type != 'none':
+                    badge_class = f"badge-{encryption_type}"
+                    badge_html = f'<span class="encryption-badge {badge_class}">{encryption_type}</span>'
+                else:
+                    badge_html = '<span class="encryption-badge badge-none">-</span>'
 
-            # For each result count column (1, 100, 500, 1000)
-            for count in [1, 100, 500, 1000]:
                 # Build test names for this specific result count
                 test_with_count = f"{base_name} - {count} results"
 
@@ -1524,38 +1522,56 @@ def generate_html_report(metrics, perf_results, output_file, data_stats=None, it
                 hybrid_time = all_tests.get(test_with_count, {}).get('Hybrid', None)
                 mongo_time = all_tests.get(test_with_count, {}).get('MongoDB-Only', None)
 
-                # If no result-size variant exists and this is the first column (1 record),
+                # If no result-size variant exists and this is the first table (1 record),
                 # try to use the regular test result (without "- X results")
                 if hybrid_time is None and mongo_time is None and count == 1:
                     hybrid_time = all_tests.get(base_name, {}).get('Hybrid', None)
                     mongo_time = all_tests.get(base_name, {}).get('MongoDB-Only', None)
 
-                # Only show data if BOTH modes have valid data
-                # If either mode is missing (failed or NA), show dashes for the entire column
+                # Show data if BOTH modes have valid data, otherwise show dashes
                 if hybrid_time is not None and mongo_time is not None:
                     hybrid_val = hybrid_time
                     mongo_val = mongo_time
                     diff = mongo_val - hybrid_val
 
-                    html += f"<td>{hybrid_val:.2f}</td>"
-                    html += f"<td>{mongo_val:.2f}</td>"
+                    # Calculate percentage difference relative to Hybrid mode
+                    if hybrid_val != 0:
+                        percentage = (diff / hybrid_val) * 100
+                    else:
+                        percentage = 0
+
                     color = "color: red;" if diff > 0 else "color: green;"
-                    html += f"<td style='{color}'>{diff:+.2f}</td>"
+                    html += f"""
+                    <tr>
+                        <td><strong>{base_name}</strong></td>
+                        <td>{badge_html}</td>
+                        <td>{hybrid_val:.2f}</td>
+                        <td>{mongo_val:.2f}</td>
+                        <td style='{color}'>{diff:+.2f} ({percentage:+.1f}%)</td>
+                    </tr>
+                    """
                 else:
-                    # This test doesn't have valid data for both modes
-                    html += "<td>-</td><td>-</td><td>-</td>"
+                    # Show test row with dashes for missing data
+                    html += f"""
+                    <tr>
+                        <td><strong>{base_name}</strong></td>
+                        <td>{badge_html}</td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    """
 
-            html += "</tr>"
-
-        html += """
-            </tbody>
-        </table>
+            html += """
+                </tbody>
+            </table>
             """
 
         html += """
         <p style="margin-top: 10px; font-size: 12px; color: #666;">
             <strong>Note:</strong> Positive difference (red) means MongoDB-Only is slower.
-            Hybrid mode benefits from AlloyDB's plaintext storage, while MongoDB-Only decrypts all fields.
+            Hybrid mode benefits from splitting the workload: MongoDB handles encrypted search, while AlloyDB handles encrypted data retrieval.
+            MongoDB-Only performs both encrypted search and data decryption.
         </p>
         """
 
