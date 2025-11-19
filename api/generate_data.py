@@ -494,8 +494,12 @@ def insert_alloydb_data(conn, customers):
 
     print_success(f"AlloyDB: {customer_count} total customers")
 
-def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total_batches):
-    """Insert a batch into both databases and validate consistency"""
+def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total_batches, encryption_key):
+    """Insert a batch into both databases and validate consistency
+
+    MongoDB: Stores encrypted data (handled by driver with queryable encryption)
+    AlloyDB: Stores encrypted data using pgcrypto (encrypted in this function before insert)
+    """
     print_info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} records)...")
 
     mongo_collection = mongo_db["customers"]
@@ -506,7 +510,7 @@ def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total
     alloydb_inserted = []
 
     for customer in batch:
-        # Insert into MongoDB
+        # Insert into MongoDB (driver encrypts automatically)
         try:
             doc = {
                 "alloy_record_id": customer["id"],
@@ -533,26 +537,49 @@ def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total
             # If MongoDB fails, skip this record entirely
             continue
 
-        # Insert into AlloyDB (only if MongoDB succeeded)
+        # Insert into AlloyDB with pgcrypto encryption (only if MongoDB succeeded)
         try:
+            # Prepare encrypted data using pgp_sym_encrypt
+            # Note: Encryption happens in database using pgcrypto extension
             alloydb_cursor.execute(
                 """
-                INSERT INTO customers (id, full_name, email, phone, address, preferences, tier, category, status, loyalty_points, last_purchase_date, lifetime_value)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO customers (
+                    id,
+                    full_name_encrypted,
+                    email_encrypted,
+                    phone_encrypted,
+                    address_encrypted,
+                    preferences_encrypted,
+                    tier,
+                    category,
+                    status,
+                    loyalty_points,
+                    last_purchase_date,
+                    lifetime_value
+                )
+                VALUES (
+                    %s,
+                    pgp_sym_encrypt(%s, %s),
+                    pgp_sym_encrypt(%s, %s),
+                    pgp_sym_encrypt(%s, %s),
+                    pgp_sym_encrypt(%s, %s),
+                    pgp_sym_encrypt(%s, %s),
+                    %s, %s, %s, %s, %s, %s
+                )
                 ON CONFLICT (id) DO NOTHING
                 """,
                 (
                     customer["id"],
-                    customer["full_name"],
-                    customer["email"],
-                    customer["phone"],
+                    customer["full_name"], encryption_key,
+                    customer["email"], encryption_key,
+                    customer["phone"], encryption_key,
                     json.dumps({
                         "street": customer["address"],
                         "city": customer["city"],
                         "state": customer["state"],
                         "zip_code": customer["zip_code"]
-                    }),
-                    customer["preferences"],
+                    }), encryption_key,
+                    customer["preferences"], encryption_key,
                     customer["tier"],
                     customer["category"],
                     customer["status"],
@@ -595,6 +622,11 @@ def main():
     # Load encryption keys first (needed for MongoDB client configuration)
     kms_providers, key_ids = load_encryption_keys()
 
+    # Load encryption master key for AlloyDB pgcrypto encryption
+    key_path = Path('.encryption_key')
+    with open(key_path, 'r') as f:
+        alloydb_encryption_key = f.read().strip()
+
     # Connect to databases with automatic encryption enabled
     mongo_client, mongo_db = connect_mongodb(kms_providers, key_ids)
     alloydb_conn = connect_alloydb()
@@ -622,9 +654,9 @@ def main():
         # Generate batch data
         batch = generate_customer_data(current_batch_size)
 
-        # Insert with validation
+        # Insert with validation (pass encryption key for AlloyDB pgcrypto)
         success = insert_batch_with_validation(
-            mongo_db, alloydb_conn, batch, batch_num, total_batches
+            mongo_db, alloydb_conn, batch, batch_num, total_batches, alloydb_encryption_key
         )
 
         if not success:

@@ -6,13 +6,37 @@
 
 ## Purpose
 
-This POC demonstrates **MongoDB 8.2 Queryable Encryption** integrated with **AlloyDB (PostgreSQL)** through a dual-mode REST API. It proves that:
+This POC demonstrates **MongoDB 8.2 Queryable Encryption** integrated with **AlloyDB (PostgreSQL) + pgcrypto** through a dual-mode REST API. It proves that:
 
 1. ✅ **Sensitive data can be encrypted at rest** while remaining searchable
 2. ✅ **Encrypted searches perform acceptably** (~15-20ms average)
-3. ✅ **Dual architecture works** - Hybrid (MongoDB + AlloyDB) and MongoDB-Only modes
+3. ✅ **Fair performance comparison** - Both databases encrypt/decrypt data
 4. ✅ **Production-ready pattern** - REST API with automatic performance tracking
 5. ✅ **MongoDB 8.2 text preview features** - Prefix and substring search on encrypted fields
+6. ✅ **AlloyDB pgcrypto encryption** - Field-level encryption with fetch-by-ID decryption
+
+---
+
+## Encryption Strategy
+
+### MongoDB: Queryable Encryption (INDEXED + TEXTPREVIEW)
+- **Purpose:** Encrypted search functionality
+- **Algorithm:** INDEXED (equality), TEXTPREVIEW (prefix/substring)
+- **Fields:** `searchable_email`, `searchable_phone`, `searchable_name`, `metadata.category`, `metadata.status`
+- **Decryption:** Automatic during fetch (driver-level)
+
+### AlloyDB: pgcrypto Field-Level Encryption
+- **Purpose:** Encrypted storage with fetch-by-ID decryption
+- **Algorithm:** pgp_sym_encrypt/pgp_sym_decrypt (AES)
+- **Fields:** `full_name_encrypted`, `email_encrypted`, `phone_encrypted`, `address_encrypted`, `preferences_encrypted`
+- **Decryption:** Explicit during fetch (database-level using pgp_sym_decrypt)
+- **No Search:** AlloyDB only fetches by ID (from MongoDB search results)
+
+### Why This Architecture?
+1. **Fair Benchmarking:** Both databases perform encryption/decryption operations
+2. **Realistic Comparison:** MongoDB decrypts on fetch, AlloyDB decrypts on fetch
+3. **Security:** Data encrypted at rest in both databases
+4. **Compliance:** PII never stored in plaintext
 
 ---
 
@@ -30,25 +54,28 @@ FastAPI REST API (Port 8000)
     ↓
 ┌───────────────────┬────────────────────┐
 │   MongoDB 8.2     │   AlloyDB (PG 15)  │
-│   (Encrypted)     │   (Unencrypted)    │
+│   (Encrypted)     │   (Encrypted)      │
 ├───────────────────┼────────────────────┤
-│ • Encrypted       │ • Full customer    │
-│   searchable      │   data (identical  │
-│   fields          │   to MongoDB       │
-│ • Returns UUIDs   │   decrypted)       │
+│ • Queryable       │ • pgcrypto         │
+│   encryption      │   encrypted PII    │
+│   (INDEXED +      │ • Decrypt by ID    │
+│   TEXTPREVIEW)    │   only             │
+│ • Returns UUIDs   │ • No search on     │
+│                   │   encrypted fields │
 └───────────────────┴────────────────────┘
 ```
 
 **Workflow:**
 1. Client searches for "john@example.com"
-2. API encrypts search term → queries MongoDB
+2. API encrypts search term → queries MongoDB (encrypted search)
 3. MongoDB returns matching UUID
-4. API fetches complete record from AlloyDB by UUID
-5. Returns full customer data + performance metrics
+4. API fetches encrypted record from AlloyDB by UUID
+5. AlloyDB decrypts using pgp_sym_decrypt (pgcrypto)
+6. Returns full customer data + performance metrics
 
-**Use Case:** Compliance scenarios where encrypted fields must stay encrypted, AlloyDB for analytics/joins
+**Use Case:** Fair performance comparison - both databases decrypt data on fetch
 
-**Note:** Both modes return **identical data** for fair performance comparison
+**Note:** Both modes return **identical data** and perform **identical decryption** for accurate benchmarking
 
 #### **MongoDB-Only Mode**
 ```
@@ -86,7 +113,7 @@ Denodo Virtual DataPort (Port 9090)
     ↓
 ┌───────────────────┬────────────────────┐
 │   MongoDB 8.2     │   AlloyDB (PG 15)  │
-│   (Encrypted)     │   (Unencrypted)    │
+│   (Encrypted)     │   (Encrypted)      │
 ├───────────────────┼────────────────────┤
 │ • Data source     │ • Data source      │
 │   connector       │   connector        │
@@ -97,7 +124,8 @@ Denodo Virtual DataPort (Port 9090)
 
 **Workflow:**
 1. Client calls Denodo REST API
-2. Denodo virtualizes data from AlloyDB
+2. Denodo virtualizes encrypted data from AlloyDB
+3. Decryption happens via Denodo or data source
 3. Returns unified view of customer data
 4. Tracks license limitations (MaxSimultaneousRequests=3, MaxRowsPerQuery=10000)
 

@@ -129,13 +129,17 @@ class DatabaseManager:
         self.client_encryption = None
         self.key_ids = {}
         self.alloydb_conn = None
+        self.alloydb_encryption_key = None  # For pgcrypto decryption
 
     def connect_mongodb(self):
         """Connect to MongoDB with encryption support"""
         try:
-            # Read master key
+            # Read master key (used for both MongoDB and AlloyDB encryption)
             with open(MASTER_KEY_PATH, 'r') as f:
                 master_key = f.read().strip()
+
+            # Store for AlloyDB pgcrypto decryption
+            self.alloydb_encryption_key = master_key
 
             # Convert from base64 to bytes (96 bytes for local KMS)
             local_master_key = base64.b64decode(master_key)
@@ -546,7 +550,7 @@ def search_mongodb(plaintext_value: str, field: str, limit: int = 100) -> List[s
 
 def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
     """
-    Fetch customer data from AlloyDB by UUIDs
+    Fetch customer data from AlloyDB by UUIDs and decrypt using pgcrypto
 
     Args:
         uuids: List of customer UUIDs
@@ -561,15 +565,16 @@ def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
 
     try:
         with db_manager.alloydb_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Simple query - no joins for fair performance comparison
+            # Fetch encrypted data and decrypt using pgp_sym_decrypt
+            # Decryption happens in database for fair performance comparison with MongoDB
             query = """
                 SELECT
                     id AS customer_id,
-                    full_name,
-                    email,
-                    phone,
-                    address,
-                    preferences,
+                    pgp_sym_decrypt(full_name_encrypted, %s) AS full_name,
+                    pgp_sym_decrypt(email_encrypted, %s) AS email,
+                    pgp_sym_decrypt(phone_encrypted, %s) AS phone,
+                    pgp_sym_decrypt(address_encrypted, %s) AS address,
+                    pgp_sym_decrypt(preferences_encrypted, %s) AS preferences,
                     tier,
                     loyalty_points,
                     last_purchase_date,
@@ -578,7 +583,15 @@ def fetch_from_alloydb(uuids: List[str]) -> tuple[List[Dict], float]:
                 WHERE id = ANY(%s::uuid[])
             """
 
-            cursor.execute(query, (uuids,))
+            # Execute with decryption key for each encrypted field
+            cursor.execute(query, (
+                db_manager.alloydb_encryption_key,
+                db_manager.alloydb_encryption_key,
+                db_manager.alloydb_encryption_key,
+                db_manager.alloydb_encryption_key,
+                db_manager.alloydb_encryption_key,
+                uuids
+            ))
             results = cursor.fetchall()
 
             # Convert to list of dicts
