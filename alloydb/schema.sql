@@ -86,57 +86,5 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Insert sample encrypted data for testing
--- Note: Encryption key is stored in .encryption_key file (created during deployment)
--- Sample data uses a test key for demonstration
-INSERT INTO customers (
-    id,
-    full_name_encrypted,
-    email_encrypted,
-    phone_encrypted,
-    address_encrypted,
-    preferences_encrypted,
-    tier,
-    loyalty_points,
-    last_purchase_date,
-    lifetime_value
-) VALUES
-(
-    '550e8400-e29b-41d4-a716-446655440001',
-    pgp_sym_encrypt('John Doe', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('john.doe@example.com', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('+1-555-0101', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('{"street": "123 Main St", "city": "New York", "state": "NY", "zip": "10001", "country": "USA"}', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('{"newsletter": true, "notifications": {"email": true, "sms": false}, "language": "en"}', 'test_key_replace_with_actual'),
-    'gold',
-    1250,
-    '2025-10-15',
-    5420.50
-),
-(
-    '550e8400-e29b-41d4-a716-446655440002',
-    pgp_sym_encrypt('Jane Smith', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('jane.smith@example.com', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('+1-555-0102', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('{"street": "456 Oak Ave", "city": "Los Angeles", "state": "CA", "zip": "90001", "country": "USA"}', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('{"newsletter": false, "notifications": {"email": true, "sms": true}, "language": "en"}', 'test_key_replace_with_actual'),
-    'silver',
-    340,
-    '2025-10-20',
-    890.25
-),
-(
-    '550e8400-e29b-41d4-a716-446655440003',
-    pgp_sym_encrypt('Bob Johnson', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('bob.johnson@example.com', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('+1-555-0103', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('{"street": "789 Pine Rd", "city": "Chicago", "state": "IL", "zip": "60601", "country": "USA"}', 'test_key_replace_with_actual'),
-    pgp_sym_encrypt('{"newsletter": true, "notifications": {"email": false, "sms": false}, "language": "en"}', 'test_key_replace_with_actual'),
-    'platinum',
-    2100,
-    '2024-08-10',
-    12340.75
-);
-
 COMMENT ON TABLE customers IS 'Customer data table with encrypted PII fields using pgcrypto - decryption happens in application layer';
 COMMENT ON FUNCTION get_customers_by_ids IS 'Retrieve encrypted customer data by UUIDs (IDs from MongoDB search results)';

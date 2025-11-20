@@ -65,46 +65,12 @@ services:
         condition: service_healthy
     command: python api/app.py
 
-  # Denodo Express 9.0 (optional - enable with --profile denodo)
-  denodo:
-    profiles:
-      - denodo
-    build:
-      context: .
-      dockerfile: denodo/Dockerfile
-    container_name: poc_denodo
-    ports:
-      - "9999:9999"  # Virtual DataPort Server
-      - "9090:9090"  # REST API & Web Panel
-    volumes:
-      - ./denodo/init:/opt/denodo/init:ro
-      - ./denodo/init_vql.sh:/opt/denodo/init_vql.sh:ro
-      - ./${DENODO_LICENSE_FILE:-denodo-express-lic-9-202511.lic}:/opt/denodo/conf/denodo.lic:ro
-      - denodo_data:/opt/denodo/metadata
-    environment:
-      DENODO_OPTS: "-Xmx2g -Xms1g"
-    networks:
-      - poc_network
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      alloydb:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/9999 && cat < /dev/null > /dev/tcp/localhost/9090' || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 180s
-
 volumes:
   mongodb_data:
     driver: local
   mongodb_config:
     driver: local
   alloydb_data:
-    driver: local
-  denodo_data:
     driver: local
 
 networks:

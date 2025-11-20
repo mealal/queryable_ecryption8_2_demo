@@ -4,14 +4,11 @@ POC Deployment Script
 Cross-platform deployment for MongoDB + AlloyDB + API
 
 Usage:
-    python deploy.py start [--with-denodo]  # Deploy and start all components
     python deploy.py stop                    # Stop all components
-    python deploy.py restart [--with-denodo] # Restart all components
     python deploy.py status                  # Check status of all components
     python deploy.py clean                   # Stop and remove all data (WARNING: destructive)
 
 Options:
-    --with-denodo    Include Denodo Virtual DataPort in deployment (optional)
 """
 
 import subprocess
@@ -22,8 +19,6 @@ import platform
 import argparse
 from pathlib import Path
 
-# Global flag for Denodo deployment
-DEPLOY_DENODO = False
 
 # ANSI color codes for terminal output
 class Colors:
@@ -177,106 +172,6 @@ def check_prerequisites():
 
     print_success("\nAll prerequisites satisfied")
 
-def login_to_denodo_registry():
-    """Automatically log in to Denodo Harbor registry"""
-    registry = "harbor.open.denodo.com"
-    username = "mealal@gmail.com"
-    cli_secret = "c5q1SWoHqwadFJeoya2XejkqOhDOmOHr"  # Harbor CLI secret
-
-    print_info("Checking Denodo registry authentication...")
-
-    # Check if already logged in by trying to pull manifest
-    check_auth = run_command(
-        f"docker manifest inspect {registry}/denodo-express/denodo-platform:latest > nul 2>&1",
-        check=False,
-        capture_output=True
-    )
-
-    # If manifest check succeeds, we're already authenticated
-    if check_auth or run_command("docker info", check=False, capture_output=True):
-        # Try a simpler check - attempt to login (will succeed quickly if already logged in)
-        login_result = run_command(
-            f"docker login {registry} -u {username} --password-stdin",
-            check=False,
-            capture_output=True
-        )
-
-        if login_result and "Login Succeeded" in login_result:
-            print_success(f"Authenticated to {registry}")
-            return True
-        elif login_result and "Already logged in" in login_result:
-            print_success(f"Already authenticated to {registry}")
-            return True
-
-    # If we get here, we need to login
-    print_info(f"Logging in to {registry}...")
-
-    # Use subprocess to pipe password to docker login
-    try:
-        import subprocess
-        process = subprocess.Popen(
-            ["docker", "login", registry, "-u", username, "--password-stdin"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate(input=cli_secret)
-
-        if process.returncode == 0 or "Login Succeeded" in stdout or "Already logged in" in stdout:
-            print_success(f"Successfully authenticated to {registry}")
-            return True
-        else:
-            print_warning(f"Failed to authenticate to {registry}")
-            print_warning(f"Error: {stderr}")
-            return False
-    except Exception as e:
-        print_warning(f"Failed to authenticate to {registry}: {e}")
-        return False
-
-def pull_denodo_image():
-    """Pull Denodo Express image from Harbor registry"""
-    print_header("Pulling Denodo Image")
-
-    # Denodo image with SHA256 digest for exact version
-    denodo_image = "harbor.open.denodo.com/denodo-express/denodo-platform@sha256:7e10101863621ed0656e525ec9463a487be867bc6a3a12b09293153929e3bb54"
-
-    print_info("Checking if Denodo image is available...")
-
-    # Check if image already exists
-    check_image = run_command(
-        f"docker images -q {denodo_image}",
-        check=False,
-        capture_output=True
-    )
-
-    if check_image and check_image.strip():
-        print_success("Denodo image already exists locally")
-        return True
-
-    # Ensure we're logged in to the registry
-    if not login_to_denodo_registry():
-        print_warning("Continuing without Denodo registry authentication")
-        print_info("Deployment will continue, but Denodo image pull may fail")
-
-    print_info(f"Pulling Denodo image from Harbor registry...")
-    print_info("Image: harbor.open.denodo.com/denodo-express/denodo-platform")
-
-    # Try to pull the image
-    pull_result = run_command(
-        f"docker pull {denodo_image}",
-        check=False,
-        capture_output=True
-    )
-
-    if pull_result and ("Downloaded" in pull_result or "up to date" in pull_result or "Digest: sha256" in pull_result):
-        print_success("Denodo image pulled successfully")
-        return True
-    else:
-        print_warning("Failed to pull Denodo image - continuing deployment without Denodo")
-        print_info("The POC will work with MongoDB and AlloyDB, but Denodo features will be unavailable")
-        return False
-
 def start_containers():
     """Start Docker containers"""
     print_header("Starting Docker Containers")
@@ -288,10 +183,6 @@ def start_containers():
         print_error("Failed to build API container")
         return False
 
-    # Build docker-compose command with optional Denodo profile
-    if DEPLOY_DENODO:
-        print_info("Starting MongoDB, AlloyDB, API, and Denodo containers...")
-        compose_cmd = "docker-compose --profile denodo up -d"
     else:
         print_info("Starting MongoDB, AlloyDB, and API containers...")
         compose_cmd = "docker-compose up -d"
@@ -541,74 +432,6 @@ def install_api_dependencies():
         print_error("Failed to install dependencies")
         return False
 
-def init_denodo():
-    """Initialize Denodo with VQL scripts"""
-    print_header("Initializing Denodo")
-
-    # Check if Denodo container is running
-    denodo_check = run_command(
-        "docker ps --filter name=poc_denodo --format '{{.Names}}'",
-        check=False,
-        capture_output=True
-    )
-
-    if not denodo_check or 'poc_denodo' not in denodo_check:
-        print_warning("Denodo container not running, skipping initialization")
-        return False
-
-    # Wait for Denodo to be ready
-    print_info("Waiting for Denodo to be ready (this may take 2-3 minutes)...")
-    max_wait = 40  # Denodo takes longer to start
-    denodo_ready = False
-
-    for i in range(max_wait):
-        denodo_ping = run_command(
-            "curl -s -u admin:admin http://localhost:9090/denodo-restfulws/admin/ping",
-            check=False,
-            capture_output=True
-        )
-
-        if denodo_ping and ('ok' in denodo_ping.lower() or '200' in denodo_ping):
-            denodo_ready = True
-            print_success("Denodo is ready")
-            break
-
-        if i % 5 == 0:
-            print(f"  Waiting for Denodo... ({i+1}/{max_wait})")
-        time.sleep(3)
-
-    if not denodo_ready:
-        print_warning("Denodo not ready after waiting. VQL initialization skipped.")
-        print_info("Denodo will be available but without views/REST services configured")
-        return False
-
-    # Run Denodo initialization script inside the container
-    print_info("Executing VQL initialization scripts...")
-
-    # Use Python subprocess to avoid Git Bash path conversion issues on Windows
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["docker", "exec", "poc_denodo", "bash", "/opt/denodo/init_vql.sh"],
-            capture_output=True,
-            text=True,
-            timeout=180
-        )
-
-        if result.returncode == 0:
-            print_success("Denodo initialized successfully")
-            print_info("  REST API: http://localhost:9090/denodo-restfulws/poc_integration")
-            print_info("  Web Panel: http://localhost:9090")
-            return True
-        else:
-            print_warning(f"Denodo VQL initialization failed: {result.stderr}")
-            print_info("Denodo will be available but without views/REST services configured")
-            return False
-    except Exception as e:
-        print_warning(f"Denodo VQL initialization encountered issues: {e}")
-        print_info("Denodo will be available but without views/REST services configured")
-        return False
-
 def stop_containers():
     """Stop Docker containers"""
     print_header("Stopping Docker Containers")
@@ -624,30 +447,14 @@ def stop_containers():
         print_info("Containers already stopped.")
         return True
 
-    # Check if Denodo container is running
-    denodo_running = run_command(
-        "docker ps --filter name=poc_denodo --format '{{.Names}}'",
-        check=False,
-        capture_output=True
-    )
-    has_denodo = denodo_running and 'poc_denodo' in denodo_running
-
     print_info("Stopping containers...")
-
-    # Use --profile denodo if Denodo is running or flag is set
-    if DEPLOY_DENODO or has_denodo:
-        stop_cmd = "docker-compose --profile denodo stop"
-    else:
-        stop_cmd = "docker-compose stop"
+    stop_cmd = "docker-compose stop"
 
     if run_command(stop_cmd, check=False):
         print_success("Containers stopped successfully")
         print()
         print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
-        if DEPLOY_DENODO or has_denodo:
-            print("  • To start again:  python deploy.py start --with-denodo")
-        else:
-            print("  • To start again:  python deploy.py start")
+        print("  • To start again:  python deploy.py start")
         print("  • To check status: python deploy.py status")
         return True
     else:
@@ -665,35 +472,20 @@ def clean_deployment():
         print_info("No deployment found. Nothing to clean.")
         return True
 
-    # Check if Denodo container exists
-    denodo_exists = run_command(
-        "docker ps -a --filter name=poc_denodo --format '{{.Names}}'",
-        check=False,
-        capture_output=True
-    )
-    has_denodo = denodo_exists and 'poc_denodo' in denodo_exists
-
     print_warning("This will remove ALL data including Docker volumes!")
     print_warning("The following will be deleted:")
     print()
 
     if state['containers_exist']:
         containers_list = "poc_mongodb, poc_alloydb, poc_api"
-        if has_denodo or DEPLOY_DENODO:
-            containers_list += ", poc_denodo"
         print(f"  • Docker containers: {Colors.FAIL}{containers_list}{Colors.ENDC}")
     if state['data_exists']:
         print(f"  • Database data: {Colors.FAIL}MongoDB and AlloyDB data{Colors.ENDC}")
-    if has_denodo or DEPLOY_DENODO:
-        print(f"  • Denodo data: {Colors.FAIL}Denodo metadata{Colors.ENDC}")
     if state['encryption_key_exists']:
         print(f"  • Encryption key: {Colors.WARNING}Will be preserved{Colors.ENDC}")
 
     print()
-    if DEPLOY_DENODO:
-        print_info("To start fresh after cleaning, run: python deploy.py start --with-denodo")
-    else:
-        print_info("To start fresh after cleaning, run: python deploy.py start")
+    print_info("To start fresh after cleaning, run: python deploy.py start")
     print()
 
     response = input("Are you sure? Type 'yes' to confirm: ")
@@ -702,13 +494,7 @@ def clean_deployment():
         return False
 
     print_info("Stopping and removing containers...")
-
-    # Use --profile denodo if Denodo flag is set or Denodo container exists
-    if DEPLOY_DENODO or has_denodo:
-        print_info("Including Denodo in cleanup...")
-        run_command("docker-compose --profile denodo down -v", check=False)
-    else:
-        run_command("docker-compose down -v", check=False)
+    run_command("docker-compose down -v", check=False)
 
     # Clean up .encryption_key if it's a directory
     if os.path.exists('.encryption_key') and os.path.isdir('.encryption_key'):
@@ -877,9 +663,6 @@ def deploy_all():
     # Check prerequisites
     check_prerequisites()
 
-    # Pull Denodo image (optional - won't fail deployment if unsuccessful)
-    if DEPLOY_DENODO:
-        pull_denodo_image()
 
     # Start containers if needed
     if not state['containers_running']:
@@ -933,9 +716,6 @@ def deploy_all():
     # Data generation is now manual - users should run: python deploy.py generate --count 10000
     print_info("Note: Data generation is manual. Run 'python deploy.py generate --count 10000' to populate databases")
 
-    # Initialize Denodo (optional - won't fail deployment if skipped)
-    if DEPLOY_DENODO:
-        init_denodo()
 
     # Final status
     print_header("Deployment Complete!")
@@ -947,8 +727,6 @@ def deploy_all():
     print("  • AlloyDB:  localhost:5432")
     print("  • API:      http://localhost:8000")
     print("  • API Docs: http://localhost:8000/docs")
-    if DEPLOY_DENODO:
-        print("  • Denodo:   http://localhost:9090 (if initialized)")
     print()
     print(f"{Colors.BOLD}Next Steps:{Colors.ENDC}")
     print("  1. Generate test data:       python deploy.py generate --count 10000")
@@ -957,7 +735,6 @@ def deploy_all():
 
 def main():
     """Main entry point"""
-    global DEPLOY_DENODO
 
     parser = argparse.ArgumentParser(
         description='POC Deployment Script - MongoDB + AlloyDB + API',
@@ -969,11 +746,6 @@ def main():
         help='Command to execute'
     )
     parser.add_argument(
-        '--with-denodo',
-        action='store_true',
-        help='Include Denodo Virtual DataPort in deployment (optional)'
-    )
-    parser.add_argument(
         '--count',
         type=int,
         default=10000,
@@ -982,11 +754,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Set global Denodo flag
-    DEPLOY_DENODO = args.with_denodo
 
-    if DEPLOY_DENODO:
-        print_info("Denodo deployment enabled via --with-denodo flag")
 
     command = args.command.lower()
 

@@ -42,9 +42,9 @@ This POC demonstrates **MongoDB 8.2 Queryable Encryption** integrated with **All
 
 ## Architecture
 
-### Triple-Mode Design
+### Dual-Mode Design
 
-This POC supports **three operational modes** to demonstrate different architectural patterns:
+This POC supports **two operational modes** to demonstrate different architectural patterns:
 
 #### **Hybrid Mode** (Default)
 ```
@@ -105,40 +105,11 @@ FastAPI REST API (Port 8000)
 
 **Use Case:** Performance testing, data validation, simplified deployments
 
-#### **Denodo Mode** (Optional)
-```
-Client Application
-    ↓
-Denodo Virtual DataPort (Port 9090)
-    ↓
-┌───────────────────┬────────────────────┐
-│   MongoDB 8.2     │   AlloyDB (PG 15)  │
-│   (Encrypted)     │   (Encrypted)      │
-├───────────────────┼────────────────────┤
-│ • Data source     │ • Data source      │
-│   connector       │   connector        │
-│ • Federated       │ • Federated        │
-│   queries         │   queries          │
-└───────────────────┴────────────────────┘
-```
-
-**Workflow:**
-1. Client calls Denodo REST API
-2. Denodo virtualizes encrypted data from AlloyDB
-3. Decryption happens via Denodo or data source
-3. Returns unified view of customer data
-4. Tracks license limitations (MaxSimultaneousRequests=3, MaxRowsPerQuery=10000)
-
-**Use Case:** Data virtualization, federated queries, centralized data governance
-
-**License**: Denodo Express (expires 2026-12-01)
-
 ### Mode Switching
 
 All search endpoints support the `?mode=` parameter:
 - `?mode=hybrid` (default) - MongoDB search + AlloyDB fetch
 - `?mode=mongodb_only` - MongoDB search + decrypt all fields
-- **Denodo mode** - Available via dedicated Denodo REST endpoints (port 9090)
 
 **Example:**
 ```bash
@@ -147,9 +118,6 @@ GET /api/v1/customers/search/email?email=test@example.com
 
 # MongoDB-Only mode
 GET /api/v1/customers/search/email?email=test@example.com&mode=mongodb_only
-
-# Denodo mode
-curl -u admin:admin http://localhost:9090/denodo-restfulws/poc_integration/email_prefix_search?prefix=test
 ```
 
 ---
@@ -215,15 +183,12 @@ All search endpoints support `?mode=hybrid` (default) or `?mode=mongodb_only`:
 ### Fully Automated Deployment
 
 ```bash
-# 1. Deploy MongoDB + AlloyDB + API (Denodo optional)
+# 1. Deploy MongoDB + AlloyDB + API
 #    - Docker containers (MongoDB, AlloyDB, API)
 #    - Replica set initialization
 #    - Database users
 #    - Encryption keys (auto-generated and saved)
 python deploy.py start
-
-# Optional: Include Denodo Virtual DataPort
-python deploy.py start --with-denodo
 
 # 2. Generate test data (10,000 customers with encrypted PII)
 #    - Batch processing with consistency validation
@@ -238,9 +203,7 @@ python run_tests.py --iterations 5
 
 **API available at:** http://localhost:8000/docs
 
-**Note:**
-- The API runs automatically in Docker (container: poc_api). No manual `python app.py` needed.
-- Denodo is **disabled by default**. Use `--with-denodo` flag to enable it.
+**Note:** The API runs automatically in Docker (container: poc_api). No manual `python app.py` needed.
 
 ---
 
@@ -251,9 +214,6 @@ python run_tests.py --iterations 5
 ```bash
 # Standard deployment (MongoDB + AlloyDB + API)
 python deploy.py start
-
-# With Denodo Virtual DataPort
-python deploy.py start --with-denodo
 ```
 
 **This script will (100% automated):**
@@ -267,11 +227,8 @@ python deploy.py start --with-denodo
 - ✅ Setup encryption schema
 - ✅ Install API dependencies
 - ✅ Verify all components are ready
-- ✅ (Optional) Deploy Denodo with `--with-denodo` flag
 
 **No manual steps required!** Everything is configured automatically.
-
-**Denodo Note:** Denodo Virtual DataPort is disabled by default to simplify deployment. Enable it only when needed for data virtualization testing.
 
 **Other deployment commands:**
 ```bash
@@ -361,85 +318,22 @@ python run_tests.py --report my_test_report.html
 ```
 
 **The test script will:**
-- ✅ Run 73 functional tests (health, encrypted searches, result size variants)
+- ✅ Run comprehensive functional tests (health, encrypted searches, result size variants)
 - ✅ Test BOTH Hybrid and MongoDB-Only modes
 - ✅ Display real-time metrics during execution
-- ✅ Run 18 performance tests (9 operations × 2 modes) with configurable iterations
+- ✅ Run performance tests with configurable iterations
 - ✅ Calculate statistics (avg, median, min, max, std dev)
 - ✅ Generate HTML test report with mode comparison charts
+- ✅ Unified test execution logic for all query types
 - ✅ Centralized validation logic for consistent pass/fail criteria
-- ✅ Console output matches HTML report duration
-
-**Expected Output:**
-```
-================================================================================
-                              Functional Tests
-================================================================================
-
-TEST: Health Check
-✓ API is healthy
-ℹ MongoDB: connected
-ℹ AlloyDB: connected
-ℹ Encryption Keys: 5
-
-================================================================================
-                          Equality Query Tests - Hybrid Mode
-================================================================================
-
-TEST: Phone Equality Search (Hybrid)
-✓ Found customer: John Doe
-  MongoDB Search.................................... 12.50 ms
-  AlloyDB Fetch..................................... 8.30 ms
-  Total Time........................................ 20.80 ms
-✓ Customer data validation passed
-
-...
-
-================================================================================
-                              Performance Testing
-================================================================================
-Running 100 iterations per test...
-
-Phone Equality Search (Hybrid):
-  Average.......................................... 17.09 ms
-  Median........................................... 11.33 ms
-  Min.............................................. 10.28 ms
-  Max.............................................. 40.12 ms
-
-Phone Equality Search (MongoDB-Only):
-  Average.......................................... 15.86 ms
-  Median........................................... 10.78 ms
-  Min.............................................. 9.94 ms
-  Max.............................................. 34.73 ms
-
-...
-
-================================================================================
-                              Test Summary
-================================================================================
-
-Results:
-  Total Tests:    73
-  Passed:         73
-  Failed:         0
-  Pass Rate:      100.0%
-  Total Duration: 46.79s
-
-✓ Report generated: test_report.html
-
-🎉 All tests passed!
-```
 
 ### Performance Report
 
-After running tests, open [test_report.html](test_report.html) to view:
+After running tests, open `test_report.html` to view:
 - **Mode Comparison** - Side-by-side performance (Hybrid vs MongoDB-Only)
-- **Performance Metrics** - Detailed statistics for all 18 test scenarios
-- **Color-coded results** - Green = MongoDB-Only faster, Red = Hybrid faster
-
-**Key Findings from Test Report:**
-- MongoDB-Only faster for: Phone Equality (-7.2%), Category Equality (-7.3%), Name Substring searches (-36.7%)
-- Hybrid faster for: Email prefix searches (+12.9% to +16.7%)
+- **Performance Metrics** - Detailed statistics for all test scenarios
+- **Test Results** - Pass/fail status with timing breakdowns
+- **Result Set Size Analysis** - Performance impact of different data volumes
 
 ### Manual Testing
 
@@ -563,62 +457,23 @@ This POC demonstrates all three MongoDB 8.2 encryption algorithms:
 
 ## Performance Metrics
 
-### Expected Performance (from test_report.html)
-
-**Hybrid Mode:**
-- Phone Equality Search: ~17ms average
-- Email Prefix Search: ~16-18ms average
-- Name Substring Search: ~13-20ms average
-
-**MongoDB-Only Mode:**
-- Phone Equality Search: ~16ms average (7% faster)
-- Email Prefix Search: ~18-21ms average (slower)
-- Name Substring Search: ~12-14ms average (up to 37% faster)
-
-**Denodo Mode:**
-- Phone Search: ~20-30ms average (virtualization overhead)
-- Email Prefix: ~25-35ms average
-- Name Substring: ~20-30ms average
-- **Note**: Subject to license limits (MaxSimultaneousRequests=3)
-
-**Overall:** All modes perform acceptably, with trade-offs:
-- Hybrid: Best for encrypted search + AlloyDB analytics
-- MongoDB-Only: Fastest for pure MongoDB operations
-- Denodo: Best for data virtualization and federated queries
-
----
-
-## Denodo Integration
-
-### Overview
-
-Denodo Virtual DataPort 9.0 Express provides a data virtualization layer over MongoDB and AlloyDB, enabling:
-- Unified REST API access to both data sources
-- Federated query capabilities
-- Centralized data governance
-- Subject to Express license limitations
-
-### Quick Start
+Run the test suite to measure performance in your environment:
 
 ```bash
-# Denodo is deployed automatically
-python deploy.py start
+# Run tests with 100 iterations for accurate metrics
+python run_tests.py --iterations 100
 
-# Test Denodo endpoints
-curl -u admin:admin http://localhost:9090/denodo-restfulws/poc_integration/phone_search?phone=%2B1-555-0101
-
-# Access Web Panel
-# http://localhost:9090 (admin/admin)
+# View detailed results in test_report.html
 ```
 
-### License Limitations
+**Performance is measured for:**
+- **Equality queries** - Phone, category, status searches
+- **Prefix queries** - Email prefix searches
+- **Substring queries** - Name substring searches
+- **Result set sizes** - 1, 100, 500, 1000 records
+- **Both modes** - Hybrid (MongoDB + AlloyDB) and MongoDB-Only
 
-- **MaxSimultaneousRequests**: 3 concurrent requests
-- **MaxRowsPerQuery**: 10,000 rows
-- **Expiration**: 2026-12-01
-- **Test Impact**: Automatic throttling, tracked in test reports
-
-**See** [denodo/README.md](denodo/README.md) for detailed documentation.
+The HTML report provides detailed statistics (avg, median, min, max) and mode comparisons for all test scenarios.
 
 ---
 
@@ -626,28 +481,17 @@ curl -u admin:admin http://localhost:9090/denodo-restfulws/poc_integration/phone
 
 ```
 poc1/
-├── README.md                    ← This file (UPDATED)
+├── README.md                    ← This file
 ├── requirements.txt             ← Python dependencies
 │
-├── deploy.py                    ← Deployment automation (cross-platform, includes Denodo)
+├── deploy.py                    ← Deployment automation (cross-platform)
 ├── generate_data.py             ← Data generation script (cross-platform)
-├── run_tests.py                 ← Test suite with triple-mode testing
+├── run_tests.py                 ← Test suite with dual-mode testing
 │
 ├── api/                         ← REST API
 │   ├── app.py                   ← FastAPI application with dual-mode support
 │   ├── Dockerfile               ← Docker image for API
 │   └── requirements.txt         ← API dependencies
-│
-├── denodo/                      ← Denodo Virtual DataPort integration
-│   ├── README.md                ← Denodo documentation
-│   ├── Dockerfile               ← Denodo container definition
-│   ├── denodo_wrapper.py        ← Python REST API client
-│   ├── init_denodo.py           ← Initialization script
-│   └── init/                    ← VQL scripts
-│       ├── 01-datasources.vql   ← Data source configuration
-│       ├── 02-base-views.vql    ← Base views
-│       ├── 03-derived-views.vql ← Derived/search views
-│       └── 04-rest-webservices.vql ← REST API definitions
 │
 ├── mongodb/                     ← Encryption setup
 │   └── setup-encryption.py      ← Creates keys & schema
@@ -655,11 +499,10 @@ poc1/
 ├── alloydb/                     ← Database schema
 │   └── schema.sql               ← PostgreSQL tables
 │
-├── docker-compose.yml           ← Container orchestration (MongoDB, AlloyDB, API, Denodo)
-├── denodo-express-lic-9-202511.lic ← Denodo Express license
+├── docker-compose.yml           ← Container orchestration (MongoDB, AlloyDB, API)
 ├── .encryption_key              ← Master key (generated, excluded from git)
 ├── .gitignore                   ← Git ignore (includes .encryption_key)
-└── test_report.html             ← Generated test report with 3-mode comparison
+└── test_report.html             ← Generated test report with dual-mode comparison
 ```
 
 ---
@@ -822,14 +665,11 @@ python run_tests.py --iterations 5
 
 ```bash
 python deploy.py start                  # Deploy MongoDB + AlloyDB + API
-python deploy.py start --with-denodo   # Include Denodo Virtual DataPort
 python deploy.py generate --count 10000 # Generate data with consistency validation
 python deploy.py status                 # Check status
-python deploy.py stop                   # Stop containers (auto-detects Denodo)
+python deploy.py stop                   # Stop containers
 python deploy.py restart                # Restart everything
-python deploy.py restart --with-denodo  # Restart with Denodo
-python deploy.py clean                  # Clean all data (auto-detects Denodo)
-python deploy.py clean --with-denodo    # Explicitly clean including Denodo
+python deploy.py clean                  # Clean all data
 ```
 
 ### Testing Commands
@@ -856,7 +696,7 @@ python deploy.py generate --count 10000
 
 ## API Examples
 
-### Test All Modes
+### Test Both Modes
 
 ```bash
 # Hybrid Mode (MongoDB search + AlloyDB fetch)
@@ -864,9 +704,6 @@ curl "http://localhost:8000/api/v1/customers/search/email/prefix?prefix=john"
 
 # MongoDB-Only Mode (MongoDB search + decrypt all)
 curl "http://localhost:8000/api/v1/customers/search/email/prefix?prefix=john&mode=mongodb_only"
-
-# Denodo Mode (Data virtualization)
-curl -u admin:admin "http://localhost:9090/denodo-restfulws/poc_integration/email_prefix_search?prefix=john"
 ```
 
 ### All Query Types
@@ -895,19 +732,13 @@ curl "http://localhost:8000/api/v1/customers/550e8400-e29b-41d4-a716-44665544000
 - **API Documentation:** http://localhost:8000/docs
 - **Health Check:** http://localhost:8000/health
 - **Test Report:** [test_report.html](test_report.html)
-- **Denodo Web Panel:** http://localhost:9090 (admin/admin)
-- **Denodo Documentation:** [denodo/README.md](denodo/README.md)
 - **MongoDB:** localhost:27017
 - **AlloyDB:** localhost:5432
-- **Denodo:** localhost:9090 (REST), localhost:9999 (VDP Server)
 
 ---
 
-**Version:** 4.0
-**Status:** ✅ Production-Ready with Denodo Integration
-**Performance:** ~15-30ms encrypted search (all modes)
+**Status:** ✅ Production-Ready
 **Security:** MongoDB 8.2 Queryable Encryption (INDEXED + TEXTPREVIEW + UNINDEXED)
-**Features:** Triple-mode architecture (Hybrid + MongoDB-Only + Denodo)
-**Dataset:** 10,000 customers, ~25,000 orders
-**Tests:** 27 functional (17 + 10 Denodo) + 28 performance (18 + 10 Denodo, 100 iterations each)
-**Data Virtualization:** Denodo Express 9.0 (expires 2026-12-01)
+**Architecture:** Dual-mode (Hybrid + MongoDB-Only)
+**Dataset:** Configurable (default: 10,000 customers)
+**Testing:** Comprehensive functional and performance test suite with HTML reports

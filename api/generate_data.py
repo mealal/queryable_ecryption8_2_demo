@@ -494,13 +494,14 @@ def insert_alloydb_data(conn, customers):
 
     print_success(f"AlloyDB: {customer_count} total customers")
 
-def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total_batches, encryption_key):
+def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total_batches, encryption_key, total_inserted=0, target_count=10000):
     """Insert a batch into both databases and validate consistency
 
     MongoDB: Stores encrypted data (handled by driver with queryable encryption)
     AlloyDB: Stores encrypted data using pgcrypto (encrypted in this function before insert)
     """
-    print_info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} records)...")
+    records_after = total_inserted + len(batch)
+    print_info(f"Generated {total_inserted}/{target_count} records... processing next {len(batch)} (batch {batch_num}/{total_batches})")
 
     mongo_collection = mongo_db["customers"]
     alloydb_cursor = alloydb_conn.cursor()
@@ -656,7 +657,8 @@ def main():
 
         # Insert with validation (pass encryption key for AlloyDB pgcrypto)
         success = insert_batch_with_validation(
-            mongo_db, alloydb_conn, batch, batch_num, total_batches, alloydb_encryption_key
+            mongo_db, alloydb_conn, batch, batch_num, total_batches, alloydb_encryption_key,
+            total_inserted, args.count
         )
 
         if not success:
