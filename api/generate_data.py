@@ -177,6 +177,74 @@ def generate_orders(customers):
 
     return orders
 
+def build_mongodb_document(customer):
+    """Build MongoDB document from customer data
+
+    Args:
+        customer: Customer dictionary with fields: id, full_name, email, phone,
+                  category, status, tier, loyalty_points, last_purchase_date,
+                  lifetime_value, address, preferences
+
+    Returns:
+        MongoDB document dictionary ready for insertion
+    """
+    return {
+        "alloy_record_id": customer["id"],
+        # Encrypted searchable fields - MongoDB driver encrypts these automatically
+        "searchable_name": customer["full_name"],
+        "searchable_email": customer["email"],
+        "searchable_phone": customer["phone"],
+        # Metadata with encrypted searchable fields
+        "metadata": {
+            "category": customer["category"],
+            "status": customer["status"],
+            "tier": customer["tier"],
+            "loyalty_points": customer["loyalty_points"],
+            "last_purchase_date": customer["last_purchase_date"],
+            "lifetime_value": str(customer["lifetime_value"])
+        },
+        # Non-sensitive fields that can remain unencrypted
+        "address": customer["address"],
+        "preferences": customer["preferences"],
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
+    }
+
+def build_alloydb_address_json(customer):
+    """Build AlloyDB address JSON from customer data
+
+    Args:
+        customer: Customer dictionary with fields: address, city, state, zip_code
+
+    Returns:
+        JSON string of address object
+    """
+    return json.dumps({
+        "street": customer["address"],
+        "city": customer["city"],
+        "state": customer["state"],
+        "zip_code": customer["zip_code"]
+    })
+
+def get_database_counts(mongo_db, alloydb_conn):
+    """Get current record counts from both databases
+
+    Args:
+        mongo_db: MongoDB database instance
+        alloydb_conn: AlloyDB connection
+
+    Returns:
+        Tuple of (mongodb_count, alloydb_count)
+    """
+    mongo_count = mongo_db["customers"].count_documents({})
+
+    alloydb_cursor = alloydb_conn.cursor()
+    alloydb_cursor.execute("SELECT COUNT(*) FROM customers")
+    alloydb_count = alloydb_cursor.fetchone()[0]
+    alloydb_cursor.close()
+
+    return mongo_count, alloydb_count
+
 def load_encryption_keys():
     """Load encryption keys from MongoDB key vault"""
     print_info("Loading encryption keys...")
@@ -390,29 +458,7 @@ def insert_mongodb_data(db, key_ids, customers):
         # The MongoDB driver will encrypt the fields defined in encryptedFields schema automatically
         # This approach enables queryable encryption to work correctly
 
-        doc = {
-            "alloy_record_id": customer["id"],
-            # Encrypted searchable fields - MongoDB driver encrypts these automatically
-            # When queried with encryption client, these are returned decrypted
-            "searchable_name": customer["full_name"],
-            "searchable_email": customer["email"],
-            "searchable_phone": customer["phone"],
-            # Metadata with encrypted searchable fields
-            "metadata": {
-                "category": customer["category"],
-                "status": customer["status"],
-                "tier": customer["tier"],
-                "loyalty_points": customer["loyalty_points"],
-                "last_purchase_date": customer["last_purchase_date"],
-                "lifetime_value": str(customer["lifetime_value"])
-            },
-            # Non-sensitive fields that can remain unencrypted
-            "address": customer["address"],
-            "preferences": customer["preferences"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-
+        doc = build_mongodb_document(customer)
         collection.insert_one(doc)
         print_progress(i+1, len(customers), f"({i+1}/{len(customers)} customers)")
 
@@ -447,12 +493,7 @@ def insert_alloydb_data(conn, customers):
             c["full_name"],
             c["email"],
             c["phone"],
-            json.dumps({
-                "street": c["address"],
-                "city": c["city"],
-                "state": c["state"],
-                "zip_code": c["zip_code"]
-            }),
+            build_alloydb_address_json(c),
             c["preferences"],
             c["tier"],
             c["category"],
@@ -513,24 +554,7 @@ def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total
     for customer in batch:
         # Insert into MongoDB (driver encrypts automatically)
         try:
-            doc = {
-                "alloy_record_id": customer["id"],
-                "searchable_name": customer["full_name"],
-                "searchable_email": customer["email"],
-                "searchable_phone": customer["phone"],
-                "metadata": {
-                    "category": customer["category"],
-                    "status": customer["status"],
-                    "tier": customer["tier"],
-                    "loyalty_points": customer["loyalty_points"],
-                    "last_purchase_date": customer["last_purchase_date"],
-                    "lifetime_value": str(customer["lifetime_value"])
-                },
-                "address": customer["address"],
-                "preferences": customer["preferences"],
-                "created_at": datetime.now(timezone.utc),
-                "updated_at": datetime.now(timezone.utc)
-            }
+            doc = build_mongodb_document(customer)
             mongo_collection.insert_one(doc)
             mongo_inserted.append(customer["id"])
         except Exception as e:
@@ -574,12 +598,7 @@ def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total
                     customer["full_name"], encryption_key,
                     customer["email"], encryption_key,
                     customer["phone"], encryption_key,
-                    json.dumps({
-                        "street": customer["address"],
-                        "city": customer["city"],
-                        "state": customer["state"],
-                        "zip_code": customer["zip_code"]
-                    }), encryption_key,
+                    build_alloydb_address_json(customer), encryption_key,
                     customer["preferences"], encryption_key,
                     customer["tier"],
                     customer["category"],
@@ -633,11 +652,7 @@ def main():
     alloydb_conn = connect_alloydb()
 
     # Get initial counts
-    mongo_initial = mongo_db["customers"].count_documents({})
-    alloydb_cursor = alloydb_conn.cursor()
-    alloydb_cursor.execute("SELECT COUNT(*) FROM customers")
-    alloydb_initial = alloydb_cursor.fetchone()[0]
-    alloydb_cursor.close()
+    mongo_initial, alloydb_initial = get_database_counts(mongo_db, alloydb_conn)
 
     print_info(f"Initial counts - MongoDB: {mongo_initial}, AlloyDB: {alloydb_initial}")
 
@@ -670,11 +685,7 @@ def main():
     # Get final counts and validate
     print_header("Final Validation")
 
-    mongo_final = mongo_db["customers"].count_documents({})
-    alloydb_cursor = alloydb_conn.cursor()
-    alloydb_cursor.execute("SELECT COUNT(*) FROM customers")
-    alloydb_final = alloydb_cursor.fetchone()[0]
-    alloydb_cursor.close()
+    mongo_final, alloydb_final = get_database_counts(mongo_db, alloydb_conn)
 
     print_info(f"Final counts - MongoDB: {mongo_final}, AlloyDB: {alloydb_final}")
     print_info(f"Records added - MongoDB: {mongo_final - mongo_initial}, AlloyDB: {alloydb_final - alloydb_initial}")

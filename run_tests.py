@@ -267,6 +267,79 @@ def print_metric(label, value, unit=""):
 # DATA VALIDATION
 # ============================================================================
 
+def build_api_url_and_params(field, query_type, value, mode):
+    """Build API URL and parameters based on query type
+
+    Args:
+        field: Field name to search (email, name, phone, category, status)
+        query_type: Type of query ("equality", "prefix", "suffix", "substring")
+        value: Search value
+        mode: Search mode ("hybrid" or "mongodb_only")
+
+    Returns:
+        Tuple of (url, params dict)
+
+    Raises:
+        ValueError: If query_type is not supported
+    """
+    base_url = f"{API_BASE_URL}/api/v1/customers/search/{field}"
+
+    if query_type == "equality":
+        return base_url, {field: value, "mode": mode}
+    elif query_type == "prefix":
+        return f"{base_url}/prefix", {"prefix": value, "mode": mode}
+    elif query_type == "suffix":
+        return f"{base_url}/suffix", {"suffix": value, "mode": mode}
+    elif query_type == "substring":
+        return f"{base_url}/substring", {"substring": value, "mode": mode}
+    else:
+        raise ValueError(f"Unknown query_type: {query_type}")
+
+def get_test_value_from_pool(test_pool, pool_key, iteration, iterations, test_name, fallback_values):
+    """Get test value from pool with fallback and special processing
+
+    Args:
+        test_pool: Dictionary of test value pools
+        pool_key: Key to access in test_pool
+        iteration: Current iteration number
+        iterations: Total iterations
+        test_name: Name of the test (for special processing)
+        fallback_values: Dictionary of fallback values by field type
+
+    Returns:
+        Test value string
+    """
+    # Try to get value from pool
+    if test_pool and pool_key in test_pool and test_pool[pool_key]:
+        # If pool is big enough, use sequential values; otherwise pick randomly
+        if len(test_pool[pool_key]) >= iterations:
+            test_value = test_pool[pool_key][iteration % len(test_pool[pool_key])]
+        else:
+            # Pool too small, pick randomly
+            test_value = random.choice(test_pool[pool_key])
+
+        # Special processing for certain test types
+        if "Last Name" in test_name and ' ' in test_value:
+            return test_value.split()[-1][:10]  # Extract last name substring
+        elif "Partial Match" in test_name and len(test_value) > 4:
+            return test_value[:4]  # Take first 4 chars for partial match
+        else:
+            return test_value
+
+    # Fallback to static values
+    if "Phone" in test_name:
+        return fallback_values.get("phone", TEST_PHONE)
+    elif "Email" in test_name and "Username" in test_name:
+        return fallback_values.get("email", TEST_EMAIL).split('@')[0][:4]
+    elif "Email" in test_name:
+        return fallback_values.get("email", TEST_EMAIL)
+    elif "Category" in test_name:
+        return fallback_values.get("category", TEST_CATEGORY)
+    elif "Status" in test_name:
+        return fallback_values.get("status", TEST_STATUS)
+    else:
+        return fallback_values.get("name", TEST_NAME)[:10]
+
 def validate_result_count(results_count, expected_count, test_name):
     """
     Validate result count against expected count with standardized logic.
@@ -652,6 +725,15 @@ def run_performance_tests(metrics, iterations=10):
         print(f"\n{Colors.BOLD}{test_name}:{Colors.ENDC}")
         times = []
 
+        # Prepare fallback values for get_test_value_from_pool
+        fallback_values = {
+            "phone": TEST_PHONE,
+            "email": TEST_EMAIL,
+            "category": TEST_CATEGORY,
+            "status": TEST_STATUS,
+            "name": TEST_NAME
+        }
+
         for i in range(iterations):
             # Add small delay between iterations to prevent MongoDB driver overload
             # This is especially important for MongoDB-only mode with high iteration counts
@@ -661,65 +743,16 @@ def run_performance_tests(metrics, iterations=10):
             start = time.time()
 
             try:
-                # Get test value for this iteration
-                if test_pool and pool_key in test_pool and test_pool[pool_key]:
-                    # If pool is big enough, use sequential values; otherwise pick randomly
-                    if len(test_pool[pool_key]) >= iterations:
-                        test_value = test_pool[pool_key][i % len(test_pool[pool_key])]
-                    else:
-                        # Pool too small, pick randomly
-                        test_value = random.choice(test_pool[pool_key])
+                # Get test value using helper function
+                test_value = get_test_value_from_pool(
+                    test_pool, pool_key, i, iterations, test_name, fallback_values
+                )
 
-                    # Special processing for certain test types
-                    if "Last Name" in test_name and ' ' in test_value:
-                        test_value = test_value.split()[-1][:10]  # Extract last name substring
-                    elif "Partial Match" in test_name and len(test_value) > 4:
-                        test_value = test_value[:4]  # Take first 4 chars for partial match
-                else:
-                    # Fallback to static test value
-                    if "Phone" in test_name:
-                        test_value = TEST_PHONE
-                    elif "Email" in test_name and "Username" in test_name:
-                        test_value = TEST_EMAIL.split('@')[0][:4]
-                    elif "Email" in test_name:
-                        test_value = TEST_EMAIL
-                    elif "Category" in test_name:
-                        test_value = TEST_CATEGORY
-                    elif "Status" in test_name:
-                        test_value = TEST_STATUS
-                    else:
-                        test_value = TEST_NAME[:10]
+                # Build URL and params using helper function
+                url, params = build_api_url_and_params(field, query_type, test_value, mode)
 
-                # Build appropriate request based on endpoint type
-                if endpoint_type == "search":
-                    if query_type == "equality":
-                        # Equality search: /api/v1/customers/search/{field}?{param}={value}&mode={mode}
-                        response = requests.get(
-                            f"{API_BASE_URL}/api/v1/customers/search/{field}",
-                            params={param_name: test_value, "mode": mode},
-                            timeout=10
-                        )
-                    elif query_type == "prefix":
-                        # Prefix search: /api/v1/customers/search/{field}/prefix?{param}={value}&mode={mode}
-                        response = requests.get(
-                            f"{API_BASE_URL}/api/v1/customers/search/{field}/prefix",
-                            params={param_name: test_value, "mode": mode},
-                            timeout=10
-                        )
-                    elif query_type == "substring":
-                        # Substring search: /api/v1/customers/search/{field}/substring?{param}={value}&mode={mode}
-                        response = requests.get(
-                            f"{API_BASE_URL}/api/v1/customers/search/{field}/substring",
-                            params={param_name: test_value, "mode": mode},
-                            timeout=10
-                        )
-                    else:
-                        print(f"  Iteration {i+1:2d}: UNKNOWN query type")
-                        continue
-                else:
-                    print(f"  Iteration {i+1:2d}: UNKNOWN endpoint type")
-                    continue
-
+                # Execute request
+                response = requests.get(url, params=params, timeout=10)
                 duration = (time.time() - start) * 1000
 
                 if response.status_code == 200:
@@ -1353,19 +1386,46 @@ def validate_data_availability():
         print("  2. python deploy.py generate --count 10000")
         sys.exit(1)
 
+def run_test_for_both_modes(metrics, test_fn, field, value, base_name, **kwargs):
+    """Run same test for both Hybrid and MongoDB-Only modes
+
+    Args:
+        metrics: TestMetrics instance
+        test_fn: Test function to call (test_encrypted_search, test_prefix_search, etc.)
+        field: Field name to search
+        value: Search value
+        base_name: Base test name (without mode suffix)
+        **kwargs: Additional arguments to pass to test function (e.g., limit)
+    """
+    for mode in TEST_MODES:
+        mode_label = "Hybrid" if mode == "hybrid" else "MongoDB-Only"
+        test_name = f"{base_name} ({mode_label})"
+        test_fn(metrics, field, value, test_name, mode, **kwargs)
+
 def run_equality_tests(metrics):
     """Run equality query tests for both Hybrid and MongoDB-Only modes"""
     print_header("Equality Query Tests - Hybrid Mode")
 
-    test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (Hybrid)", "hybrid")
-    test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (Hybrid)", "hybrid")
-    test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (Hybrid)", "hybrid")
+    run_test_for_both_modes(metrics, test_encrypted_search, "phone", TEST_PHONE, "Phone Equality Search")
+    run_test_for_both_modes(metrics, test_encrypted_search, "category", TEST_CATEGORY, "Category Equality Search")
+    run_test_for_both_modes(metrics, test_encrypted_search, "status", TEST_STATUS, "Status Equality Search")
 
-    print_header("Equality Query Tests - MongoDB-Only Mode")
+def run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit):
+    """Run result-size test for both modes
 
-    test_encrypted_search(metrics, "phone", TEST_PHONE, "Phone Equality Search (MongoDB-Only)", "mongodb_only")
-    test_encrypted_search(metrics, "category", TEST_CATEGORY, "Category Equality Search (MongoDB-Only)", "mongodb_only")
-    test_encrypted_search(metrics, "status", TEST_STATUS, "Status Equality Search (MongoDB-Only)", "mongodb_only")
+    Args:
+        metrics: TestMetrics instance
+        test_fn: Test function to call
+        field: Field name to search
+        value: Search value
+        base_name: Base test name
+        limit: Result limit
+    """
+    print_header(f"{base_name} - {limit} records")
+    for mode in TEST_MODES:
+        mode_label = "Hybrid" if mode == "hybrid" else "MongoDB-Only"
+        test_name = f"{base_name} - {limit} results ({mode_label})"
+        test_fn(metrics, field, value, test_name, mode, limit=limit)
 
 def run_result_size_tests(metrics):
     """Run result set size performance tests"""
@@ -1375,86 +1435,55 @@ def run_result_size_tests(metrics):
     print()
 
     result_sizes = [1, 100, 500, 1000]
-    result_size_tests = [
-        ("phone", TEST_PHONE, "Phone Equality Search"),
-        ("category", TEST_CATEGORY, "Category Equality Search"),
-        ("status", TEST_STATUS, "Status Equality Search"),
+
+    # Define all test configurations: (test_fn, field, value, base_name)
+    equality_tests = [
+        (test_encrypted_search, "phone", TEST_PHONE, "Phone Equality Search"),
+        (test_encrypted_search, "category", TEST_CATEGORY, "Category Equality Search"),
+        (test_encrypted_search, "status", TEST_STATUS, "Status Equality Search"),
     ]
 
-    for field, value, base_name in result_size_tests:
+    # Equality tests
+    for test_fn, field, value, base_name in equality_tests:
         for limit in result_sizes:
-            print_header(f"{base_name} - {limit} records")
-            test_encrypted_search(metrics, field, value, f"{base_name} - {limit} results (Hybrid)", "hybrid", limit=limit)
-            test_encrypted_search(metrics, field, value, f"{base_name} - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+            run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit)
 
-    # Add result size variants for Prefix queries
+    # Prefix tests
     print_header("Result Set Size Tests - Prefix Queries")
-    prefix_username = TEST_EMAIL.split('@')[0][:4]
+    prefix_tests = [
+        (test_prefix_search, "email", TEST_EMAIL, "Email Exact Match via Prefix"),
+        (test_prefix_search, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username"),
+    ]
 
-    # Email Exact Match via Prefix (using full email)
-    for limit in result_sizes:
-        print_header(f"Email Exact Match via Prefix - {limit} records")
-        test_prefix_search(metrics, "email", TEST_EMAIL, f"Email Exact Match via Prefix - {limit} results (Hybrid)", "hybrid", limit=limit)
-        test_prefix_search(metrics, "email", TEST_EMAIL, f"Email Exact Match via Prefix - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+    for test_fn, field, value, base_name in prefix_tests:
+        for limit in result_sizes:
+            run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit)
 
-    # Email Prefix Search - Username (using partial email)
-    for limit in result_sizes:
-        print_header(f"Email Prefix Search - Username - {limit} records")
-        test_prefix_search(metrics, "email", prefix_username, f"Email Prefix Search - Username - {limit} results (Hybrid)", "hybrid", limit=limit)
-        test_prefix_search(metrics, "email", prefix_username, f"Email Prefix Search - Username - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
-
-    # Add result size variants for Substring queries
+    # Substring tests
     print_header("Result Set Size Tests - Substring Queries")
-    name_first = TEST_NAME.split()[0]
-    name_last = TEST_NAME.split()[-1]
-    name_partial = TEST_NAME.split()[0][:3]
+    substring_tests = [
+        (test_substring_search, "name", TEST_NAME.split()[0], "Encrypted Name Search"),
+        (test_substring_search, "name", TEST_NAME.split()[0], "Name Substring - First Name"),
+        (test_substring_search, "name", TEST_NAME.split()[-1], "Name Substring - Last Name"),
+        (test_substring_search, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match"),
+    ]
 
-    # Encrypted Name Search (using first name only - substring has 10 char limit)
-    name_search_value = TEST_NAME.split()[0]  # Use first name only to stay within 10 char limit
-    for limit in result_sizes:
-        print_header(f"Encrypted Name Search - {limit} records")
-        test_substring_search(metrics, "name", name_search_value, f"Encrypted Name Search - {limit} results (Hybrid)", "hybrid", limit=limit)
-        test_substring_search(metrics, "name", name_search_value, f"Encrypted Name Search - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
-
-    # Name Substring - First Name
-    for limit in result_sizes:
-        print_header(f"Name Substring - First Name - {limit} records")
-        test_substring_search(metrics, "name", name_first, f"Name Substring - First Name - {limit} results (Hybrid)", "hybrid", limit=limit)
-        test_substring_search(metrics, "name", name_first, f"Name Substring - First Name - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
-
-    for limit in result_sizes:
-        print_header(f"Name Substring - Last Name - {limit} records")
-        test_substring_search(metrics, "name", name_last, f"Name Substring - Last Name - {limit} results (Hybrid)", "hybrid", limit=limit)
-        test_substring_search(metrics, "name", name_last, f"Name Substring - Last Name - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
-
-    for limit in result_sizes:
-        print_header(f"Name Substring - Partial Match - {limit} records")
-        test_substring_search(metrics, "name", name_partial, f"Name Substring - Partial Match - {limit} results (Hybrid)", "hybrid", limit=limit)
-        test_substring_search(metrics, "name", name_partial, f"Name Substring - Partial Match - {limit} results (MongoDB-Only)", "mongodb_only", limit=limit)
+    for test_fn, field, value, base_name in substring_tests:
+        for limit in result_sizes:
+            run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit)
 
 def run_preview_feature_tests(metrics):
     """Run preview feature tests (prefix and substring queries)"""
-    print_header("Preview Feature Tests - Prefix Queries (Hybrid Mode)")
+    print_header("Preview Feature Tests - Prefix Queries")
 
-    test_prefix_search(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix (Hybrid)", "hybrid")
-    test_prefix_search(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username (Hybrid)", "hybrid")
+    run_test_for_both_modes(metrics, test_prefix_search, "email", TEST_EMAIL, "Email Exact Match via Prefix")
+    run_test_for_both_modes(metrics, test_prefix_search, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username")
 
-    print_header("Preview Feature Tests - Prefix Queries (MongoDB-Only Mode)")
+    print_header("Preview Feature Tests - Substring Queries")
 
-    test_prefix_search(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix (MongoDB-Only)", "mongodb_only")
-    test_prefix_search(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username (MongoDB-Only)", "mongodb_only")
-
-    print_header("Preview Feature Tests - Substring Queries (Hybrid Mode)")
-
-    test_substring_search(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name (Hybrid)", "hybrid")
-    test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (Hybrid)", "hybrid")
-    test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (Hybrid)", "hybrid")
-
-    print_header("Preview Feature Tests - Substring Queries (MongoDB-Only Mode)")
-
-    test_substring_search(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name (MongoDB-Only)", "mongodb_only")
-    test_substring_search(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name (MongoDB-Only)", "mongodb_only")
-    test_substring_search(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match (MongoDB-Only)", "mongodb_only")
+    run_test_for_both_modes(metrics, test_substring_search, "name", TEST_NAME.split()[0], "Name Substring - First Name")
+    run_test_for_both_modes(metrics, test_substring_search, "name", TEST_NAME.split()[-1], "Name Substring - Last Name")
+    run_test_for_both_modes(metrics, test_substring_search, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match")
 
 # ============================================================================
 # MAIN ENTRY POINT

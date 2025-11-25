@@ -75,6 +75,84 @@ def run_command(cmd, check=True, capture_output=False):
                 print(e.stderr)
         return False
 
+def check_mongodb_health():
+    """Check if MongoDB is healthy and responding to commands
+
+    Returns:
+        bool: True if MongoDB is healthy, False otherwise
+    """
+    result = run_command(
+        "docker exec poc_mongodb mongosh --eval \"db.adminCommand({ping: 1})\"",
+        check=False,
+        capture_output=True
+    )
+    return result and "ok: 1" in result
+
+def check_alloydb_health():
+    """Check if AlloyDB is healthy and responding to queries
+
+    Returns:
+        bool: True if AlloyDB is healthy, False otherwise
+    """
+    result = run_command(
+        'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT 1;" -t',
+        check=False,
+        capture_output=True
+    )
+    return result and "1" in result
+
+def check_replica_set_status():
+    """Check if MongoDB replica set is initialized and operational
+
+    Returns:
+        bool: True if replica set is operational, False otherwise
+    """
+    result = run_command(
+        "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
+        check=False,
+        capture_output=True
+    )
+    return result and '1' in result
+
+def get_mongodb_customer_count():
+    """Get customer count from MongoDB
+
+    Returns:
+        int: Number of customers, or 0 if unable to retrieve count
+    """
+    count_cmd = "docker exec poc_mongodb mongosh poc_database --eval \"db.customers.countDocuments()\" --quiet"
+    count = run_command(count_cmd, check=False, capture_output=True)
+    if count:
+        import re
+        match = re.search(r'\b(\d+)\b', count)
+        if match:
+            return int(match.group(1))
+    return 0
+
+def get_alloydb_customer_count():
+    """Get customer count from AlloyDB
+
+    Returns:
+        int: Number of customers, or 0 if unable to retrieve count
+    """
+    count_cmd = 'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT COUNT(*) FROM customers;" -t'
+    count = run_command(count_cmd, check=False, capture_output=True)
+    if count:
+        try:
+            return int(count.strip())
+        except ValueError:
+            return 0
+    return 0
+
+def cleanup_encryption_key_directory():
+    """Clean up .encryption_key if it's a directory instead of a file"""
+    if os.path.exists('.encryption_key') and os.path.isdir('.encryption_key'):
+        print_info("Removing .encryption_key directory...")
+        import shutil
+        shutil.rmtree('.encryption_key')
+        return True
+    return False
+
 def check_deployment_state():
     """Check current state of deployment to determine what actions are safe"""
     state = {
@@ -99,28 +177,14 @@ def check_deployment_state():
             state['containers_running'] = True
 
             # Check MongoDB health
-            mongo_check = run_command(
-                "docker exec poc_mongodb mongosh --eval 'db.adminCommand({ping:1})' --quiet",
-                check=False, capture_output=True
-            )
-            if mongo_check and 'ok: 1' in mongo_check:
-                state['mongodb_healthy'] = True
+            state['mongodb_healthy'] = check_mongodb_health()
 
+            if state['mongodb_healthy']:
                 # Check replica set
-                rs_check = run_command(
-                    "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
-                    check=False, capture_output=True
-                )
-                if rs_check and '1' in rs_check:
-                    state['replica_set_initialized'] = True
+                state['replica_set_initialized'] = check_replica_set_status()
 
             # Check AlloyDB health
-            alloydb_check = run_command(
-                'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT 1;" -t',
-                check=False, capture_output=True
-            )
-            if alloydb_check and '1' in alloydb_check:
-                state['alloydb_healthy'] = True
+            state['alloydb_healthy'] = check_alloydb_health()
 
             # Check API
             api_check = run_command("curl -s http://localhost:8000/health", check=False, capture_output=True)
@@ -133,12 +197,8 @@ def check_deployment_state():
 
     # Check if data exists (check MongoDB)
     if state['mongodb_healthy']:
-        count_check = run_command(
-            "docker exec poc_mongodb mongosh poc_database --eval 'db.customers.countDocuments()' --quiet",
-            check=False, capture_output=True
-        )
-        if count_check and count_check.strip() != '0':
-            state['data_exists'] = True
+        count = get_mongodb_customer_count()
+        state['data_exists'] = count > 0
 
     return state
 
@@ -199,21 +259,7 @@ def start_containers():
     for i in range(max_wait):
         time.sleep(2)
 
-        # Check MongoDB
-        mongo_result = run_command(
-            "docker exec poc_mongodb mongosh --eval \"db.adminCommand({ping: 1})\"",
-            check=False,
-            capture_output=True
-        )
-
-        # Check AlloyDB
-        alloydb_result = run_command(
-            'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT 1;" -t',
-            check=False,
-            capture_output=True
-        )
-
-        if mongo_result and "ok: 1" in mongo_result and alloydb_result and "1" in alloydb_result:
+        if check_mongodb_health() and check_alloydb_health():
             print_success("All containers are healthy")
             return True
 
@@ -229,13 +275,7 @@ def init_replica_set():
     print_info("Checking replica set status...")
 
     # Check if already initialized - rs.status() returns ok:1 when operational
-    rs_status = run_command(
-        "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
-        check=False,
-        capture_output=True
-    )
-
-    if rs_status and '1' in rs_status:
+    if check_replica_set_status():
         print_success("Replica set already initialized and operational")
         return True
 
@@ -276,12 +316,7 @@ def init_replica_set():
 
         # Verify it's operational
         for i in range(10):
-            rs_check = run_command(
-                "docker exec poc_mongodb mongosh --eval 'rs.status().ok' --quiet",
-                check=False,
-                capture_output=True
-            )
-            if rs_check and '1' in rs_check:
+            if check_replica_set_status():
                 print_success("Replica set is operational")
                 return True
             time.sleep(2)
@@ -335,14 +370,11 @@ def setup_encryption():
     print_header("Setting Up MongoDB Encryption Schema")
 
     # Clean up .encryption_key if it's a directory
-    if os.path.exists('.encryption_key'):
-        if os.path.isdir('.encryption_key'):
-            print_warning(".encryption_key is a directory, removing...")
-            import shutil
-            shutil.rmtree('.encryption_key')
-        elif os.path.isfile('.encryption_key'):
-            # File exists, check if we need to recreate
-            pass
+    if cleanup_encryption_key_directory():
+        print_warning(".encryption_key was a directory, removed")
+    elif os.path.exists('.encryption_key') and os.path.isfile('.encryption_key'):
+        # File exists, check if we need to recreate
+        pass
 
     # Check if encryption keys exist in MongoDB
     print_info("Checking encryption key vault...")
@@ -371,11 +403,10 @@ def setup_encryption():
         run_command('docker exec poc_mongodb mongosh --eval "db.getSiblingDB(\'encryption\').dropDatabase()" --quiet', check=False)
         run_command('docker exec poc_mongodb mongosh --eval "db.getSiblingDB(\'poc_database\').dropDatabase()" --quiet', check=False)
         if os.path.exists('.encryption_key'):
-            if os.path.isdir('.encryption_key'):
-                import shutil
-                shutil.rmtree('.encryption_key')
+            if cleanup_encryption_key_directory():
+                pass  # Directory removed
             else:
-                os.remove('.encryption_key')
+                os.remove('.encryption_key')  # Remove file
 
     print_info("Running encryption setup script (schema only, no data)...")
 
@@ -497,10 +528,7 @@ def clean_deployment():
     run_command("docker-compose down -v", check=False)
 
     # Clean up .encryption_key if it's a directory
-    if os.path.exists('.encryption_key') and os.path.isdir('.encryption_key'):
-        print_info("Removing .encryption_key directory...")
-        import shutil
-        shutil.rmtree('.encryption_key')
+    cleanup_encryption_key_directory()
 
     print_success("Deployment cleaned successfully")
     print()
@@ -561,12 +589,7 @@ def check_status():
 
     # Check MongoDB
     print(f"\n{Colors.BOLD}MongoDB:{Colors.ENDC}")
-    mongo_check = run_command(
-        "docker exec poc_mongodb mongosh --eval \"db.adminCommand({ping: 1})\"",
-        check=False,
-        capture_output=True
-    )
-    if mongo_check and "ok: 1" in mongo_check:
+    if check_mongodb_health():
         print_success("MongoDB: Healthy")
 
         # Check encryption
@@ -576,32 +599,19 @@ def check_status():
             print_warning("Encryption: Not configured")
 
         # Check data
-        count_cmd = "docker exec poc_mongodb mongosh poc_database --eval \"db.customers.countDocuments()\""
-        count = run_command(count_cmd, check=False, capture_output=True)
-        if count:
-            # Extract just the number from the output
-            import re
-            match = re.search(r'\b(\d+)\b', count)
-            if match:
-                print_info(f"Customer records: {match.group(1)}")
+        count = get_mongodb_customer_count()
+        print_info(f"Customer records: {count}")
     else:
         print_error("MongoDB: Not accessible")
 
     # Check AlloyDB
     print(f"\n{Colors.BOLD}AlloyDB:{Colors.ENDC}")
-    alloydb_check = run_command(
-        'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT 1;" -t',
-        check=False,
-        capture_output=True
-    )
-    if alloydb_check:
+    if check_alloydb_health():
         print_success("AlloyDB: Healthy")
 
         # Check data
-        count_cmd = 'docker exec poc_alloydb psql -U postgres -d alloydb_poc -c "SELECT COUNT(*) FROM customers;" -t'
-        count = run_command(count_cmd, check=False, capture_output=True)
-        if count:
-            print_info(f"Customer records: {count.strip()}")
+        count = get_alloydb_customer_count()
+        print_info(f"Customer records: {count}")
     else:
         print_error("AlloyDB: Not accessible")
 
