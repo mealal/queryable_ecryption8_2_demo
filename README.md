@@ -125,8 +125,8 @@ GET /api/v1/customers/search/email?email=test@example.com&mode=mongodb_only
 ## What's Included
 
 ### Data
-- **10,000 encrypted customers** in MongoDB (configurable)
-- **10,000 customers** in AlloyDB (identical to MongoDB decrypted data)
+- **Configurable customer count** in MongoDB (tested with 100,000 records)
+- **Matching customer count** in AlloyDB (identical to MongoDB decrypted data)
 - **5 Data Encryption Keys (DEKs)** for different fields
 
 ### Encrypted Fields
@@ -190,10 +190,10 @@ All search endpoints support `?mode=hybrid` (default) or `?mode=mongodb_only`:
 #    - Encryption keys (auto-generated and saved)
 python deploy.py start
 
-# 2. Generate test data (10,000 customers with encrypted PII)
+# 2. Generate test data (customers with encrypted PII)
 #    - Batch processing with consistency validation
 #    - Automatic rollback on failures
-python deploy.py generate --count 10000
+python deploy.py generate --count 100000
 
 # 3. Run comprehensive tests with 5 iterations
 python run_tests.py --iterations 5
@@ -274,11 +274,11 @@ python mongodb/setup-encryption.py
 ### Automated Data Generation with Consistency Validation
 
 ```bash
-# Generate 10,000 customers (recommended for performance testing)
-python deploy.py generate --count 10000
+# Generate 100,000 customers (recommended for performance testing)
+python deploy.py generate --count 100000
 
-# Generate custom number of customers
-python deploy.py generate --count 1000
+# Generate smaller dataset for quick testing
+python deploy.py generate --count 10000
 ```
 
 **This script will:**
@@ -304,11 +304,11 @@ python deploy.py generate --count 1000
 ### Automated Testing with Real-time Metrics
 
 ```bash
-# Run full test suite with real-time metrics (100 iterations per test)
-python run_tests.py
+# Run full test suite with real-time metrics (default: 100 iterations per test)
+python run_tests.py --iterations 100
 
-# Run quick tests (5 iterations)
-python run_tests.py --iterations 5
+# Run quick tests (10 iterations - default)
+python run_tests.py
 
 # Run with custom iterations
 python run_tests.py --iterations 200
@@ -485,11 +485,11 @@ poc1/
 ├── requirements.txt             ← Python dependencies
 │
 ├── deploy.py                    ← Deployment automation (cross-platform)
-├── generate_data.py             ← Data generation script (cross-platform)
 ├── run_tests.py                 ← Test suite with dual-mode testing
 │
 ├── api/                         ← REST API
 │   ├── app.py                   ← FastAPI application with dual-mode support
+│   ├── generate_data.py         ← Data generation script
 │   ├── Dockerfile               ← Docker image for API
 │   └── requirements.txt         ← API dependencies
 │
@@ -553,7 +553,7 @@ docker logs poc_api
 ### No search results
 - Verify data was generated: `curl http://localhost:8000/health`
 - Check encryption keys exist: `cat .encryption_key`
-- Regenerate if needed: `python generate_data.py --reset --count 10000`
+- Regenerate if needed: `python deploy.py clean && python deploy.py start && python deploy.py generate --count 100000`
 
 ### Mode parameter not working
 Ensure you're using the correct parameter format:
@@ -651,11 +651,11 @@ curl http://localhost:8000/api/v1/customers/search/email/prefix?prefix=john&mode
 # 1. Deploy everything (starts Docker containers including API)
 python deploy.py start
 
-# 2. Generate 10,000 customers with consistency validation
-python deploy.py generate --count 10000
+# 2. Generate customers with consistency validation
+python deploy.py generate --count 100000
 
-# 3. Run comprehensive tests (73 functional + 18 performance tests)
-python run_tests.py --iterations 5
+# 3. Run comprehensive tests
+python run_tests.py --iterations 100
 
 # 4. View test report
 # Open test_report.html in browser
@@ -664,8 +664,8 @@ python run_tests.py --iterations 5
 ### Deployment Commands
 
 ```bash
-python deploy.py start                  # Deploy MongoDB + AlloyDB + API
-python deploy.py generate --count 10000 # Generate data with consistency validation
+python deploy.py start                   # Deploy MongoDB + AlloyDB + API
+python deploy.py generate --count 100000 # Generate data with consistency validation
 python deploy.py status                 # Check status
 python deploy.py stop                   # Stop containers
 python deploy.py restart                # Restart everything
@@ -675,9 +675,9 @@ python deploy.py clean                  # Clean all data
 ### Testing Commands
 
 ```bash
-python run_tests.py                   # Full test suite (100 iterations)
+python run_tests.py                   # Default test suite (10 iterations)
+python run_tests.py --iterations 100  # Full test suite (100 iterations)
 python run_tests.py --iterations 5    # Quick tests (5 iterations)
-python run_tests.py --iterations 200  # Custom iterations
 ```
 
 ### Emergency Commands
@@ -689,7 +689,7 @@ docker-compose down
 # Reset everything (WARNING: deletes all data)
 python deploy.py clean
 python deploy.py start
-python deploy.py generate --count 10000
+python deploy.py generate --count 100000
 ```
 
 ---
@@ -740,5 +740,5 @@ curl "http://localhost:8000/api/v1/customers/550e8400-e29b-41d4-a716-44665544000
 **Status:** ✅ Production-Ready
 **Security:** MongoDB 8.2 Queryable Encryption (INDEXED + TEXTPREVIEW + UNINDEXED)
 **Architecture:** Dual-mode (Hybrid + MongoDB-Only)
-**Dataset:** Configurable (default: 10,000 customers)
+**Dataset:** Configurable (tested with 100,000 customers)
 **Testing:** Comprehensive functional and performance test suite with HTML reports
