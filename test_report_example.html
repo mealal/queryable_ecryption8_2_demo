@@ -1,0 +1,1211 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>POC Test Report - 2025-11-25 12:16</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #666;
+            margin-top: 30px;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .metric-card {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #4CAF50;
+        }
+        .metric-card.failed {
+            border-left-color: #f44336;
+        }
+        .metric-label {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+        }
+        .metric-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #333;
+            margin-top: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #4CAF50;
+            color: white;
+        }
+        tr:hover {
+            background: #f5f5f5;
+        }
+        .passed {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .failed {
+            color: #f44336;
+            font-weight: bold;
+        }
+        .warning {
+            background: #fff3cd !important;
+            border: 2px solid #ffc107;
+        }
+        .warning .metric-value {
+            color: #ff9800;
+        }
+        .note {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+        .perf-chart {
+            margin: 20px 0;
+        }
+        .timestamp {
+            color: #999;
+            font-size: 12px;
+        }
+        .encryption-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .badge-equality {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        .badge-prefix {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+        .badge-substring {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        .badge-none {
+            background: #f5f5f5;
+            color: #666;
+        }
+        .comparison-table {
+            margin-bottom: 20px;
+        }
+        .comparison-table td:first-child {
+            text-align: left;
+        }
+        h3 {
+            color: #555;
+            margin-top: 25px;
+            margin-bottom: 10px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>POC Test Report</h1>
+        <p class="timestamp">Generated: 2025-11-25 12:16:59</p>
+
+        <h2>Test Summary</h2>
+        <div class="summary">
+            <div class="metric-card">
+                <div class="metric-label">Total Tests</div>
+                <div class="metric-value">89</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Passed</div>
+                <div class="metric-value passed">89</div>
+            </div>
+            <div class="metric-card ">
+                <div class="metric-label">Failed</div>
+                <div class="metric-value failed">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Pass Rate</div>
+                <div class="metric-value">100.0%</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Benchmark Duration</div>
+                <div class="metric-value">101.59s</div>
+            </div>
+            
+        <div class="metric-card">
+            <div class="metric-label">Test Iterations</div>
+            <div class="metric-value">100</div>
+        </div>
+        
+            
+        <div class="metric-card">
+            <div class="metric-label">MongoDB Records</div>
+            <div class="metric-value">100,000</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Encryption Keys</div>
+            <div class="metric-value">5</div>
+        </div>
+        
+        </div>
+
+
+        <h2>Test Results</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Test Name</th>
+                    <th>Status</th>
+                    <th>Duration (ms)</th>
+                    <th>Timestamp</th>
+                </tr>
+            </thead>
+            <tbody>
+    
+                <tr>
+                    <td>Health Check</td>
+                    <td class="passed">[PASS]</td>
+                    <td>65.20</td>
+                    <td class="timestamp">2025-11-25T12:13:47.597672</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>12.92</td>
+                    <td class="timestamp">2025-11-25T12:13:47.610788</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>10.90</td>
+                    <td class="timestamp">2025-11-25T12:13:47.621852</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>93.27</td>
+                    <td class="timestamp">2025-11-25T12:13:47.715433</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>75.52</td>
+                    <td class="timestamp">2025-11-25T12:13:47.791235</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>91.38</td>
+                    <td class="timestamp">2025-11-25T12:13:47.882917</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>75.20</td>
+                    <td class="timestamp">2025-11-25T12:13:47.958387</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>6.30</td>
+                    <td class="timestamp">2025-11-25T12:13:47.964856</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>5.49</td>
+                    <td class="timestamp">2025-11-25T12:13:47.970488</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>10.59</td>
+                    <td class="timestamp">2025-11-25T12:13:47.981241</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>8.75</td>
+                    <td class="timestamp">2025-11-25T12:13:47.990149</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>11.56</td>
+                    <td class="timestamp">2025-11-25T12:13:48.001906</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>10.56</td>
+                    <td class="timestamp">2025-11-25T12:13:48.012616</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>10.83</td>
+                    <td class="timestamp">2025-11-25T12:13:48.023620</td>
+                </tr>
+        
+                <tr>
+                    <td>Phone Equality Search - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>8.62</td>
+                    <td class="timestamp">2025-11-25T12:13:48.032401</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>38.58</td>
+                    <td class="timestamp">2025-11-25T12:13:48.071129</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>37.71</td>
+                    <td class="timestamp">2025-11-25T12:13:48.108994</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>88.77</td>
+                    <td class="timestamp">2025-11-25T12:13:48.198060</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>75.26</td>
+                    <td class="timestamp">2025-11-25T12:13:48.273612</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>337.54</td>
+                    <td class="timestamp">2025-11-25T12:13:48.612841</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>277.49</td>
+                    <td class="timestamp">2025-11-25T12:13:48.891363</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>555.98</td>
+                    <td class="timestamp">2025-11-25T12:13:49.449126</td>
+                </tr>
+        
+                <tr>
+                    <td>Category Equality Search - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>543.49</td>
+                    <td class="timestamp">2025-11-25T12:13:49.993966</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>39.41</td>
+                    <td class="timestamp">2025-11-25T12:13:50.033602</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>37.76</td>
+                    <td class="timestamp">2025-11-25T12:13:50.071511</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>92.36</td>
+                    <td class="timestamp">2025-11-25T12:13:50.164199</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>72.19</td>
+                    <td class="timestamp">2025-11-25T12:13:50.236663</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>291.51</td>
+                    <td class="timestamp">2025-11-25T12:13:50.528991</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>215.20</td>
+                    <td class="timestamp">2025-11-25T12:13:50.744933</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>546.95</td>
+                    <td class="timestamp">2025-11-25T12:13:51.294987</td>
+                </tr>
+        
+                <tr>
+                    <td>Status Equality Search - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>407.12</td>
+                    <td class="timestamp">2025-11-25T12:13:51.703713</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>8.03</td>
+                    <td class="timestamp">2025-11-25T12:13:51.711978</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>5.42</td>
+                    <td class="timestamp">2025-11-25T12:13:51.717537</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>8.86</td>
+                    <td class="timestamp">2025-11-25T12:13:51.726543</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>8.32</td>
+                    <td class="timestamp">2025-11-25T12:13:51.735017</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>9.66</td>
+                    <td class="timestamp">2025-11-25T12:13:51.744854</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>7.79</td>
+                    <td class="timestamp">2025-11-25T12:13:51.752806</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>9.34</td>
+                    <td class="timestamp">2025-11-25T12:13:51.762344</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>7.46</td>
+                    <td class="timestamp">2025-11-25T12:13:51.769975</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>14.30</td>
+                    <td class="timestamp">2025-11-25T12:13:51.784447</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>11.55</td>
+                    <td class="timestamp">2025-11-25T12:13:51.796134</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>64.38</td>
+                    <td class="timestamp">2025-11-25T12:13:51.860800</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>52.60</td>
+                    <td class="timestamp">2025-11-25T12:13:51.913674</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>269.39</td>
+                    <td class="timestamp">2025-11-25T12:13:52.183930</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>208.66</td>
+                    <td class="timestamp">2025-11-25T12:13:52.393312</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>507.08</td>
+                    <td class="timestamp">2025-11-25T12:13:52.902026</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>388.31</td>
+                    <td class="timestamp">2025-11-25T12:13:53.291808</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>12.96</td>
+                    <td class="timestamp">2025-11-25T12:13:53.305010</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>12.01</td>
+                    <td class="timestamp">2025-11-25T12:13:53.317167</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>60.28</td>
+                    <td class="timestamp">2025-11-25T12:13:53.377740</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>46.98</td>
+                    <td class="timestamp">2025-11-25T12:13:53.425017</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>248.72</td>
+                    <td class="timestamp">2025-11-25T12:13:53.674568</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>198.27</td>
+                    <td class="timestamp">2025-11-25T12:13:53.873595</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>488.39</td>
+                    <td class="timestamp">2025-11-25T12:13:54.363631</td>
+                </tr>
+        
+                <tr>
+                    <td>Encrypted Name Search - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>375.47</td>
+                    <td class="timestamp">2025-11-25T12:13:54.740529</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>12.17</td>
+                    <td class="timestamp">2025-11-25T12:13:54.752934</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>11.89</td>
+                    <td class="timestamp">2025-11-25T12:13:54.764969</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>60.00</td>
+                    <td class="timestamp">2025-11-25T12:13:54.825280</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>45.34</td>
+                    <td class="timestamp">2025-11-25T12:13:54.870909</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>241.50</td>
+                    <td class="timestamp">2025-11-25T12:13:55.113262</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>182.44</td>
+                    <td class="timestamp">2025-11-25T12:13:55.296484</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>476.41</td>
+                    <td class="timestamp">2025-11-25T12:13:55.774524</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>365.67</td>
+                    <td class="timestamp">2025-11-25T12:13:56.141755</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>12.15</td>
+                    <td class="timestamp">2025-11-25T12:13:56.154186</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>11.42</td>
+                    <td class="timestamp">2025-11-25T12:13:56.165749</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>58.90</td>
+                    <td class="timestamp">2025-11-25T12:13:56.224987</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>41.35</td>
+                    <td class="timestamp">2025-11-25T12:13:56.266669</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>257.60</td>
+                    <td class="timestamp">2025-11-25T12:13:56.525112</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>161.04</td>
+                    <td class="timestamp">2025-11-25T12:13:56.686889</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>472.06</td>
+                    <td class="timestamp">2025-11-25T12:13:57.160586</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>310.80</td>
+                    <td class="timestamp">2025-11-25T12:13:57.472843</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 1 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>21.73</td>
+                    <td class="timestamp">2025-11-25T12:13:57.494816</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 1 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>17.66</td>
+                    <td class="timestamp">2025-11-25T12:13:57.512616</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 100 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>65.47</td>
+                    <td class="timestamp">2025-11-25T12:13:57.578407</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 100 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>53.92</td>
+                    <td class="timestamp">2025-11-25T12:13:57.632604</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 500 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>255.35</td>
+                    <td class="timestamp">2025-11-25T12:13:57.888798</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 500 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>183.61</td>
+                    <td class="timestamp">2025-11-25T12:13:58.073168</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 1000 results (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>504.17</td>
+                    <td class="timestamp">2025-11-25T12:13:58.579113</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match - 1000 results (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>355.96</td>
+                    <td class="timestamp">2025-11-25T12:13:58.936602</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>8.91</td>
+                    <td class="timestamp">2025-11-25T12:13:58.945750</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Exact Match via Prefix (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>6.94</td>
+                    <td class="timestamp">2025-11-25T12:13:58.952838</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>61.23</td>
+                    <td class="timestamp">2025-11-25T12:13:59.014340</td>
+                </tr>
+        
+                <tr>
+                    <td>Email Prefix Search - Username (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>45.65</td>
+                    <td class="timestamp">2025-11-25T12:13:59.060255</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>59.45</td>
+                    <td class="timestamp">2025-11-25T12:13:59.120009</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - First Name (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>42.97</td>
+                    <td class="timestamp">2025-11-25T12:13:59.163248</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>58.13</td>
+                    <td class="timestamp">2025-11-25T12:13:59.221683</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Last Name (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>41.04</td>
+                    <td class="timestamp">2025-11-25T12:13:59.263000</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match (Hybrid)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>64.09</td>
+                    <td class="timestamp">2025-11-25T12:13:59.327422</td>
+                </tr>
+        
+                <tr>
+                    <td>Name Substring - Partial Match (MongoDB-Only)</td>
+                    <td class="passed">[PASS]</td>
+                    <td>48.58</td>
+                    <td class="timestamp">2025-11-25T12:13:59.376281</td>
+                </tr>
+        
+            </tbody>
+        </table>
+    
+        <h2>Performance Metrics</h2>
+    
+        <table>
+            <thead>
+                <tr>
+                    <th rowspan="2">Operation</th>
+                    <th rowspan="2">Encryption Type</th>
+                    <th colspan="3">Hybrid Mode</th>
+                    <th colspan="3">MongoDB-Only Mode</th>
+                </tr>
+                <tr>
+                    <th>Avg (ms)</th>
+                    <th>Median (ms)</th>
+                    <th>Std Dev</th>
+                    <th>Avg (ms)</th>
+                    <th>Median (ms)</th>
+                    <th>Std Dev</th>
+                </tr>
+            </thead>
+            <tbody>
+        <tr><td>Category Equality Search</td><td><span class="encryption-badge badge-equality">equality</span></td><td>89.54</td><td>89.01</td><td>1.86</td><td>72.41</td><td>71.91</td><td>2.71</td></tr><tr><td>Email Exact Match via Prefix</td><td><span class="encryption-badge badge-prefix">prefix</span></td><td>9.96</td><td>9.86</td><td>1.02</td><td>8.48</td><td>8.44</td><td>0.75</td></tr><tr><td>Email Prefix Search - Username</td><td><span class="encryption-badge badge-prefix">prefix</span></td><td>62.82</td><td>62.66</td><td>1.46</td><td>45.32</td><td>45.94</td><td>2.96</td></tr><tr><td>Encrypted Name Search</td><td><span class="encryption-badge badge-substring">substring</span></td><td>61.01</td><td>60.35</td><td>2.39</td><td>44.66</td><td>44.75</td><td>3.20</td></tr><tr><td>Name Substring - First Name</td><td><span class="encryption-badge badge-substring">substring</span></td><td>60.79</td><td>60.20</td><td>2.20</td><td>44.40</td><td>44.52</td><td>3.13</td></tr><tr><td>Name Substring - Last Name</td><td><span class="encryption-badge badge-substring">substring</span></td><td>61.07</td><td>60.82</td><td>1.80</td><td>43.72</td><td>43.59</td><td>1.49</td></tr><tr><td>Name Substring - Partial Match</td><td><span class="encryption-badge badge-substring">substring</span></td><td>61.59</td><td>60.62</td><td>3.45</td><td>45.17</td><td>44.78</td><td>4.46</td></tr><tr><td>Phone Equality Search</td><td><span class="encryption-badge badge-equality">equality</span></td><td>12.45</td><td>12.30</td><td>1.66</td><td>9.82</td><td>9.77</td><td>1.14</td></tr><tr><td>Status Equality Search</td><td><span class="encryption-badge badge-equality">equality</span></td><td>90.63</td><td>90.12</td><td>2.55</td><td>74.13</td><td>73.87</td><td>1.98</td></tr>
+            </tbody>
+        </table>
+        
+        <h2>Mode Comparison by Result Set Size</h2>
+        <p>Performance comparison between Hybrid and MongoDB-Only modes across different result set sizes.</p>
+        
+            <h3>1 Record</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Test Type</th>
+                        <th>Encryption Type</th>
+                        <th>Hybrid (ms)</th>
+                        <th>MongoDB (ms)</th>
+                        <th>Diff (ms)</th>
+                    </tr>
+                </thead>
+                <tbody>
+            
+                    <tr>
+                        <td><strong>Category Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>34.82</td>
+                        <td>33.98</td>
+                        <td style='color: green;'>-0.84 (-2.4%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Exact Match via Prefix</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>4.35</td>
+                        <td>1.95</td>
+                        <td style='color: green;'>-2.40 (-55.1%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Prefix Search - Username</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>10.50</td>
+                        <td>7.95</td>
+                        <td style='color: green;'>-2.56 (-24.3%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Encrypted Name Search</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>9.37</td>
+                        <td>8.03</td>
+                        <td style='color: green;'>-1.35 (-14.4%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - First Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>8.56</td>
+                        <td>8.13</td>
+                        <td style='color: green;'>-0.43 (-5.0%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Last Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>8.63</td>
+                        <td>7.91</td>
+                        <td style='color: green;'>-0.71 (-8.3%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Partial Match</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>18.09</td>
+                        <td>14.08</td>
+                        <td style='color: green;'>-4.01 (-22.2%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Phone Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>2.70</td>
+                        <td>1.88</td>
+                        <td style='color: green;'>-0.82 (-30.4%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Status Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>35.64</td>
+                        <td>33.77</td>
+                        <td style='color: green;'>-1.87 (-5.3%)</td>
+                    </tr>
+                    
+                </tbody>
+            </table>
+            
+            <h3>100 Records</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Test Type</th>
+                        <th>Encryption Type</th>
+                        <th>Hybrid (ms)</th>
+                        <th>MongoDB (ms)</th>
+                        <th>Diff (ms)</th>
+                    </tr>
+                </thead>
+                <tbody>
+            
+                    <tr>
+                        <td><strong>Category Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>84.62</td>
+                        <td>70.53</td>
+                        <td style='color: green;'>-14.09 (-16.6%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Exact Match via Prefix</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Prefix Search - Username</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>60.09</td>
+                        <td>47.73</td>
+                        <td style='color: green;'>-12.36 (-20.6%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Encrypted Name Search</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>56.26</td>
+                        <td>42.58</td>
+                        <td style='color: green;'>-13.68 (-24.3%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - First Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>55.46</td>
+                        <td>41.38</td>
+                        <td style='color: green;'>-14.07 (-25.4%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Last Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>54.81</td>
+                        <td>37.43</td>
+                        <td style='color: green;'>-17.39 (-31.7%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Partial Match</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>61.16</td>
+                        <td>49.75</td>
+                        <td style='color: green;'>-11.41 (-18.7%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Phone Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Status Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>87.81</td>
+                        <td>67.96</td>
+                        <td style='color: green;'>-19.85 (-22.6%)</td>
+                    </tr>
+                    
+                </tbody>
+            </table>
+            
+            <h3>500 Records</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Test Type</th>
+                        <th>Encryption Type</th>
+                        <th>Hybrid (ms)</th>
+                        <th>MongoDB (ms)</th>
+                        <th>Diff (ms)</th>
+                    </tr>
+                </thead>
+                <tbody>
+            
+                    <tr>
+                        <td><strong>Category Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>331.52</td>
+                        <td>270.99</td>
+                        <td style='color: green;'>-60.53 (-18.3%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Exact Match via Prefix</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Prefix Search - Username</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>262.63</td>
+                        <td>203.11</td>
+                        <td style='color: green;'>-59.52 (-22.7%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Encrypted Name Search</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>243.02</td>
+                        <td>192.56</td>
+                        <td style='color: green;'>-50.45 (-20.8%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - First Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>236.02</td>
+                        <td>176.84</td>
+                        <td style='color: green;'>-59.18 (-25.1%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Last Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>251.81</td>
+                        <td>155.80</td>
+                        <td style='color: green;'>-96.01 (-38.1%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Partial Match</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>249.69</td>
+                        <td>178.01</td>
+                        <td style='color: green;'>-71.67 (-28.7%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Phone Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Status Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>285.63</td>
+                        <td>209.58</td>
+                        <td style='color: green;'>-76.05 (-26.6%)</td>
+                    </tr>
+                    
+                </tbody>
+            </table>
+            
+            <h3>1000 Records</h3>
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Test Type</th>
+                        <th>Encryption Type</th>
+                        <th>Hybrid (ms)</th>
+                        <th>MongoDB (ms)</th>
+                        <th>Diff (ms)</th>
+                    </tr>
+                </thead>
+                <tbody>
+            
+                    <tr>
+                        <td><strong>Category Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>548.04</td>
+                        <td>535.31</td>
+                        <td style='color: green;'>-12.73 (-2.3%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Exact Match via Prefix</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Email Prefix Search - Username</strong></td>
+                        <td><span class="encryption-badge badge-prefix">prefix</span></td>
+                        <td>498.83</td>
+                        <td>380.30</td>
+                        <td style='color: green;'>-118.53 (-23.8%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Encrypted Name Search</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>480.58</td>
+                        <td>367.84</td>
+                        <td style='color: green;'>-112.74 (-23.5%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - First Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>467.96</td>
+                        <td>358.16</td>
+                        <td style='color: green;'>-109.80 (-23.5%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Last Name</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>464.52</td>
+                        <td>303.12</td>
+                        <td style='color: green;'>-161.40 (-34.7%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Name Substring - Partial Match</strong></td>
+                        <td><span class="encryption-badge badge-substring">substring</span></td>
+                        <td>480.21</td>
+                        <td>348.38</td>
+                        <td style='color: green;'>-131.82 (-27.5%)</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Phone Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>-</td>
+                    </tr>
+                    
+                    <tr>
+                        <td><strong>Status Equality Search</strong></td>
+                        <td><span class="encryption-badge badge-equality">equality</span></td>
+                        <td>534.85</td>
+                        <td>398.81</td>
+                        <td style='color: green;'>-136.03 (-25.4%)</td>
+                    </tr>
+                    
+                </tbody>
+            </table>
+            
+        <p style="margin-top: 10px; font-size: 12px; color: #666;">
+            <strong>Note:</strong> Positive difference (red) means MongoDB-Only is slower.
+            Hybrid mode benefits from splitting the workload: MongoDB handles encrypted search, while AlloyDB handles encrypted data retrieval.
+            MongoDB-Only performs both encrypted search and data decryption.
+        </p>
+        
+    </div>
+</body>
+</html>
+    
