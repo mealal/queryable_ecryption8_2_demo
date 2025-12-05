@@ -13,7 +13,3 @@ pymongocrypt>=1.16.0
 
 # PostgreSQL
 psycopg2-binary>=2.9.10
-
-# Utilities
-python-dotenv>=1.0.0
-python-multipart>=0.0.6

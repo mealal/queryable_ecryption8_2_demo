@@ -20,8 +20,6 @@ import argparse
 import sys
 import statistics
 import random
-import re
-import subprocess
 from datetime import datetime
 from typing import Dict, List
 
@@ -51,98 +49,91 @@ TEST_MODES = ["hybrid", "mongodb_only"]
 # DATA FETCHING FUNCTIONS
 # ============================================================================
 
-# Fetch real test data from API
-def get_test_data():
-    """Fetch real customer values from API for testing
+def get_test_data(sample_size=1):
+    """Fetch test data from API for testing
 
-    This is NOT part of performance testing - it's just to get valid test data.
-    Uses the category search endpoint to get data from MongoDB (not AlloyDB tier endpoint).
-    """
-    try:
-        # Fetch one customer using category search (searches MongoDB encrypted data)
-        # This ensures we get test data that actually exists in MongoDB
-        response = requests.get(
-            f"{API_BASE_URL}/api/v1/customers/search/category",
-            params={"category": "retail", "limit": 1},
-            timeout=5
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('success') and data.get('data') and len(data['data']) > 0:
-                customer = data['data'][0]
-                return {
-                    "id": customer.get('customer_id'),
-                    "name": customer.get('full_name'),
-                    "email": customer.get('email'),
-                    "phone": customer.get('phone'),
-                    "tier": customer.get('tier', 'gold'),
-                    "category": customer.get('category', 'retail'),
-                    "status": customer.get('status', 'active')
-                }
-    except Exception as e:
-        print(f"Warning: Could not fetch test data from API: {e}")
-        return None
-
-def get_test_data_pool(sample_size=200):
-    """Fetch a pool of test values for performance testing
+    This function serves two purposes:
+    - sample_size=1: Returns single customer dict for basic tests (original get_test_data behavior)
+    - sample_size>1: Returns dict with lists of values for performance benchmarks (original get_test_data_pool behavior)
 
     Args:
-        sample_size: Number of samples to fetch (default: 200)
+        sample_size: Number of samples to fetch (default: 1)
 
     Returns:
-        Dictionary with lists of values for each field type
+        - If sample_size=1: Single customer dict with id, name, email, phone, tier, category, status
+        - If sample_size>1: Dict with lists of values (names, emails, phones, categories, statuses, email_prefixes, name_substrings)
+        - None if fetch fails
     """
     try:
-        # Use category endpoint to fetch multiple customers (retail category typically has many)
         response = requests.get(
             f"{API_BASE_URL}/api/v1/customers/search/category",
             params={"category": "retail", "limit": min(sample_size, 10000)},
-            timeout=30
+            timeout=30 if sample_size > 1 else 5
         )
 
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('success') and data.get('data'):
-                customers = data['data']
+        if response.status_code != 200:
+            return None
 
-                pool = {
-                    "names": [],
-                    "emails": [],
-                    "phones": [],
-                    "categories": [],
-                    "statuses": [],
-                    "email_prefixes": [],
-                    "name_substrings": []
-                }
+        data = response.json()
+        if not data.get('success') or not data.get('data'):
+            return None
 
-                for customer in customers:
-                    full_name = customer.get('full_name')
-                    email = customer.get('email')
-                    phone = customer.get('phone')
-                    category = customer.get('category')
-                    status = customer.get('status')
+        customers = data['data']
+        if not customers:
+            return None
 
-                    if full_name:
-                        pool["names"].append(full_name)
-                    if email:
-                        pool["emails"].append(email)
-                    if phone:
-                        pool["phones"].append(phone)
-                    if category:
-                        pool["categories"].append(category)
-                    if status:
-                        pool["statuses"].append(status)
+        # Single customer mode (original get_test_data behavior)
+        if sample_size == 1:
+            customer = customers[0]
+            return {
+                "id": customer.get('customer_id'),
+                "name": customer.get('full_name'),
+                "email": customer.get('email'),
+                "phone": customer.get('phone'),
+                "tier": customer.get('tier', 'gold'),
+                "category": customer.get('category', 'retail'),
+                "status": customer.get('status', 'active')
+            }
 
-                    # Extract prefixes and substrings
-                    if email:
-                        pool["email_prefixes"].append(email.split('@')[0][:4])
-                    if full_name and ' ' in full_name:
-                        pool["name_substrings"].append(full_name.split()[0][:10] if len(full_name.split()[0]) > 10 else full_name.split()[0])
+        # Pool mode (original get_test_data_pool behavior)
+        pool = {
+            "names": [],
+            "emails": [],
+            "phones": [],
+            "categories": [],
+            "statuses": [],
+            "email_prefixes": [],
+            "name_substrings": []
+        }
 
-                return pool
+        for customer in customers:
+            full_name = customer.get('full_name')
+            email = customer.get('email')
+            phone = customer.get('phone')
+            category = customer.get('category')
+            status = customer.get('status')
+
+            if full_name:
+                pool["names"].append(full_name)
+            if email:
+                pool["emails"].append(email)
+            if phone:
+                pool["phones"].append(phone)
+            if category:
+                pool["categories"].append(category)
+            if status:
+                pool["statuses"].append(status)
+
+            # Extract prefixes and substrings
+            if email:
+                pool["email_prefixes"].append(email.split('@')[0][:4])
+            if full_name and ' ' in full_name:
+                pool["name_substrings"].append(full_name.split()[0][:10] if len(full_name.split()[0]) > 10 else full_name.split()[0])
+
+        return pool
+
     except Exception as e:
-        print(f"Warning: Could not fetch test data pool from API: {e}")
+        print(f"Warning: Could not fetch test data from API: {e}")
         return None
 
 # Try to get real test data, otherwise use defaults
@@ -462,7 +453,7 @@ def test_health_check(metrics):
 
 
 # Unified Test Execution Function
-# This function replaces test_encrypted_search, test_prefix_search, test_suffix_search, test_substring_search
+# This function replaces test_encrypted_search, test_prefix_search, test_substring_search
 
 def execute_test(metrics, test_config):
     """
@@ -621,57 +612,6 @@ def execute_test(metrics, test_config):
         return False
 
 
-# Wrapper functions for backwards compatibility
-def test_encrypted_search(metrics, field, value, test_name, mode="hybrid", limit=None):
-    """Test encrypted equality search - wrapper for execute_test"""
-    return execute_test(metrics, {
-        'name': test_name,
-        'field': field,
-        'value': value,
-        'query_type': 'equality',
-        'mode': mode,
-        'limit': limit,
-        'encryption_type': 'equality'
-    })
-
-
-def test_prefix_search(metrics, field, prefix, test_name, mode="hybrid", limit=None):
-    """Test encrypted prefix search - wrapper for execute_test"""
-    return execute_test(metrics, {
-        'name': test_name,
-        'field': field,
-        'value': prefix,
-        'query_type': 'prefix',
-        'mode': mode,
-        'limit': limit,
-        'encryption_type': 'prefix'
-    })
-
-
-def test_suffix_search(metrics, field, suffix, test_name, mode="hybrid"):
-    """Test encrypted suffix search - wrapper for execute_test"""
-    return execute_test(metrics, {
-        'name': test_name,
-        'field': field,
-        'value': suffix,
-        'query_type': 'suffix',
-        'mode': mode,
-        'limit': None,
-        'encryption_type': 'suffix'
-    })
-
-
-def test_substring_search(metrics, field, substring, test_name, mode="hybrid", limit=None):
-    """Test encrypted substring search - wrapper for execute_test"""
-    return execute_test(metrics, {
-        'name': test_name,
-        'field': field,
-        'value': substring,
-        'query_type': 'substring',
-        'mode': mode,
-        'limit': limit,
-        'encryption_type': 'substring'
-    })
 
 def run_performance_tests(metrics, iterations=10):
     """Run performance tests with multiple iterations for all encrypted and AlloyDB operations
@@ -684,7 +624,7 @@ def run_performance_tests(metrics, iterations=10):
     # Fetch sample pool for varied test data
     sample_size = max(iterations * 2, 200)  # Fetch at least twice the iterations, minimum 200
     print_info(f"Fetching sample pool of {sample_size} test values...")
-    test_pool = get_test_data_pool(sample_size)
+    test_pool = get_test_data(sample_size)
 
     if not test_pool:
         print_error("Failed to fetch test data pool. Using static values as fallback.")
@@ -1386,46 +1326,62 @@ def validate_data_availability():
         print("  2. python deploy.py generate --count 10000")
         sys.exit(1)
 
-def run_test_for_both_modes(metrics, test_fn, field, value, base_name, **kwargs):
+def run_test_for_both_modes(metrics, field, value, base_name, query_type, limit=None):
     """Run same test for both Hybrid and MongoDB-Only modes
 
     Args:
         metrics: TestMetrics instance
-        test_fn: Test function to call (test_encrypted_search, test_prefix_search, etc.)
         field: Field name to search
         value: Search value
         base_name: Base test name (without mode suffix)
-        **kwargs: Additional arguments to pass to test function (e.g., limit)
+        query_type: Type of query ('equality', 'prefix', 'substring')
+        limit: Optional result limit
     """
     for mode in TEST_MODES:
         mode_label = "Hybrid" if mode == "hybrid" else "MongoDB-Only"
         test_name = f"{base_name} ({mode_label})"
-        test_fn(metrics, field, value, test_name, mode, **kwargs)
+        execute_test(metrics, {
+            'name': test_name,
+            'field': field,
+            'value': value,
+            'query_type': query_type,
+            'mode': mode,
+            'limit': limit,
+            'encryption_type': query_type
+        })
 
 def run_equality_tests(metrics):
     """Run equality query tests for both Hybrid and MongoDB-Only modes"""
     print_header("Equality Query Tests - Hybrid Mode")
 
-    run_test_for_both_modes(metrics, test_encrypted_search, "phone", TEST_PHONE, "Phone Equality Search")
-    run_test_for_both_modes(metrics, test_encrypted_search, "category", TEST_CATEGORY, "Category Equality Search")
-    run_test_for_both_modes(metrics, test_encrypted_search, "status", TEST_STATUS, "Status Equality Search")
+    run_test_for_both_modes(metrics, "phone", TEST_PHONE, "Phone Equality Search", "equality")
+    run_test_for_both_modes(metrics, "category", TEST_CATEGORY, "Category Equality Search", "equality")
+    run_test_for_both_modes(metrics, "status", TEST_STATUS, "Status Equality Search", "equality")
 
-def run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit):
+def run_result_size_test_for_both_modes(metrics, field, value, base_name, query_type, limit):
     """Run result-size test for both modes
 
     Args:
         metrics: TestMetrics instance
-        test_fn: Test function to call
         field: Field name to search
         value: Search value
         base_name: Base test name
+        query_type: Type of query ('equality', 'prefix', 'substring')
         limit: Result limit
     """
     print_header(f"{base_name} - {limit} records")
     for mode in TEST_MODES:
         mode_label = "Hybrid" if mode == "hybrid" else "MongoDB-Only"
         test_name = f"{base_name} - {limit} results ({mode_label})"
-        test_fn(metrics, field, value, test_name, mode, limit=limit)
+        execute_test(metrics, {
+            'name': test_name,
+            'field': field,
+            'value': value,
+            'query_type': query_type,
+            'mode': mode,
+            'limit': limit,
+            'encryption_type': query_type
+        })
 
 def run_result_size_tests(metrics):
     """Run result set size performance tests"""
@@ -1436,54 +1392,54 @@ def run_result_size_tests(metrics):
 
     result_sizes = [1, 100, 500, 1000]
 
-    # Define all test configurations: (test_fn, field, value, base_name)
+    # Define all test configurations: (field, value, base_name, query_type)
     equality_tests = [
-        (test_encrypted_search, "phone", TEST_PHONE, "Phone Equality Search"),
-        (test_encrypted_search, "category", TEST_CATEGORY, "Category Equality Search"),
-        (test_encrypted_search, "status", TEST_STATUS, "Status Equality Search"),
+        ("phone", TEST_PHONE, "Phone Equality Search", "equality"),
+        ("category", TEST_CATEGORY, "Category Equality Search", "equality"),
+        ("status", TEST_STATUS, "Status Equality Search", "equality"),
     ]
 
     # Equality tests
-    for test_fn, field, value, base_name in equality_tests:
+    for field, value, base_name, query_type in equality_tests:
         for limit in result_sizes:
-            run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit)
+            run_result_size_test_for_both_modes(metrics, field, value, base_name, query_type, limit)
 
     # Prefix tests
     print_header("Result Set Size Tests - Prefix Queries")
     prefix_tests = [
-        (test_prefix_search, "email", TEST_EMAIL, "Email Exact Match via Prefix"),
-        (test_prefix_search, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username"),
+        ("email", TEST_EMAIL, "Email Exact Match via Prefix", "prefix"),
+        ("email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username", "prefix"),
     ]
 
-    for test_fn, field, value, base_name in prefix_tests:
+    for field, value, base_name, query_type in prefix_tests:
         for limit in result_sizes:
-            run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit)
+            run_result_size_test_for_both_modes(metrics, field, value, base_name, query_type, limit)
 
     # Substring tests
     print_header("Result Set Size Tests - Substring Queries")
     substring_tests = [
-        (test_substring_search, "name", TEST_NAME.split()[0], "Encrypted Name Search"),
-        (test_substring_search, "name", TEST_NAME.split()[0], "Name Substring - First Name"),
-        (test_substring_search, "name", TEST_NAME.split()[-1], "Name Substring - Last Name"),
-        (test_substring_search, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match"),
+        ("name", TEST_NAME.split()[0], "Encrypted Name Search", "substring"),
+        ("name", TEST_NAME.split()[0], "Name Substring - First Name", "substring"),
+        ("name", TEST_NAME.split()[-1], "Name Substring - Last Name", "substring"),
+        ("name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match", "substring"),
     ]
 
-    for test_fn, field, value, base_name in substring_tests:
+    for field, value, base_name, query_type in substring_tests:
         for limit in result_sizes:
-            run_result_size_test_for_both_modes(metrics, test_fn, field, value, base_name, limit)
+            run_result_size_test_for_both_modes(metrics, field, value, base_name, query_type, limit)
 
 def run_preview_feature_tests(metrics):
     """Run preview feature tests (prefix and substring queries)"""
     print_header("Preview Feature Tests - Prefix Queries")
 
-    run_test_for_both_modes(metrics, test_prefix_search, "email", TEST_EMAIL, "Email Exact Match via Prefix")
-    run_test_for_both_modes(metrics, test_prefix_search, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username")
+    run_test_for_both_modes(metrics, "email", TEST_EMAIL, "Email Exact Match via Prefix", "prefix")
+    run_test_for_both_modes(metrics, "email", TEST_EMAIL.split('@')[0][:4], "Email Prefix Search - Username", "prefix")
 
     print_header("Preview Feature Tests - Substring Queries")
 
-    run_test_for_both_modes(metrics, test_substring_search, "name", TEST_NAME.split()[0], "Name Substring - First Name")
-    run_test_for_both_modes(metrics, test_substring_search, "name", TEST_NAME.split()[-1], "Name Substring - Last Name")
-    run_test_for_both_modes(metrics, test_substring_search, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match")
+    run_test_for_both_modes(metrics, "name", TEST_NAME.split()[0], "Name Substring - First Name", "substring")
+    run_test_for_both_modes(metrics, "name", TEST_NAME.split()[-1], "Name Substring - Last Name", "substring")
+    run_test_for_both_modes(metrics, "name", TEST_NAME.split()[0][:3], "Name Substring - Partial Match", "substring")
 
 # ============================================================================
 # MAIN ENTRY POINT

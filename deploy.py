@@ -437,32 +437,6 @@ def setup_alloydb_schema():
         print_error("Failed to create AlloyDB schema")
         return False
 
-def generate_initial_data(count=100):
-    """Generate initial test data using generate_data.py"""
-    print_header(f"Generating Initial Test Data ({count} records)")
-
-    print_info(f"Generating {count} customer records in both databases...")
-
-    if run_command(f"docker exec poc_api python api/generate_data.py --count {count}"):
-        print_success(f"Generated {count} initial customer records")
-        return True
-    else:
-        print_error("Data generation failed")
-        return False
-
-def install_api_dependencies():
-    """Install API dependencies"""
-    print_header("Installing API Dependencies")
-
-    print_info("Installing Python packages...")
-
-    if run_command(f"{sys.executable} -m pip install -r api/requirements.txt"):
-        print_success("API dependencies installed")
-        return True
-    else:
-        print_error("Failed to install dependencies")
-        return False
-
 def stop_containers():
     """Stop Docker containers"""
     print_header("Stopping Docker Containers")

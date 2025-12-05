@@ -5,13 +5,11 @@ This script sets up queryable encryption for the POC database
 """
 
 import os
-import json
-from pymongo import MongoClient
-from pymongo.encryption import ClientEncryption, Algorithm
-from pymongo.encryption_options import AutoEncryptionOpts
-from bson.binary import Binary, UuidRepresentation
-from bson.codec_options import CodecOptions
 import base64
+from pymongo import MongoClient
+from pymongo.encryption import ClientEncryption
+from bson.binary import UuidRepresentation
+from bson.codec_options import CodecOptions
 
 # Configuration
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
@@ -39,23 +37,6 @@ KMS_PROVIDERS = {
         "key": base64.b64decode(LOCAL_MASTER_KEY)
     }
 }
-
-
-def create_data_encryption_keys(client_encryption, field_names):
-    """Create Data Encryption Keys (DEKs) in the key vault for each field"""
-    print(f"Creating {len(field_names)} Data Encryption Keys...")
-
-    key_ids = {}
-    for field_name in field_names:
-        key_alt_name = f"customer_{field_name}_key"
-        key_id = client_encryption.create_data_key(
-            "local",
-            key_alt_names=[key_alt_name]
-        )
-        key_ids[field_name] = key_id
-        print(f"  Created DEK for '{field_name}': {key_id}")
-
-    return key_ids
 
 
 def setup_queryable_encryption_schema(key_ids):
@@ -99,8 +80,6 @@ def setup_queryable_encryption_schema(key_ids):
                 "queries": [
                     {
                         "queryType": "substringPreview",
-                        "min": 2,
-                        "max": 10,
                         "strMinQueryLength": 2,    # Minimum substring query length
                         "strMaxQueryLength": 10,   # Maximum substring query length (max 10 for substringPreview)
                         "strMaxLength": 60,        # Maximum field value length (max 60 for substringPreview)
@@ -116,8 +95,6 @@ def setup_queryable_encryption_schema(key_ids):
                 "queries": [
                     {
                         "queryType": "prefixPreview",
-                        "min": 1,
-                        "max": 30,
                         "strMinQueryLength": 1,     # Minimum prefix query length
                         "strMaxQueryLength": 50,    # Maximum prefix query length (realistic for email search)
                         "strMaxLength": 100,        # Maximum field value length (realistic email length)
@@ -222,12 +199,6 @@ def main():
     # Create encryption schema
     encrypted_fields = setup_queryable_encryption_schema(key_ids)
 
-    # Save schema to file
-    encrypted_fields_map = {f"{DATABASE_NAME}.{COLLECTION_NAME}": encrypted_fields}
-    with open("encryption-schema.json", "w") as f:
-        json.dump(encrypted_fields_map, f, indent=2, default=str)
-    print("Schema saved to encryption-schema.json")
-
     # Create encrypted collection
     db = setup_client[DATABASE_NAME]
 
@@ -244,7 +215,7 @@ def main():
     print(f"\nDatabase: {DATABASE_NAME}")
     print(f"Collection: {COLLECTION_NAME}")
     print(f"Key Vault: {KEY_VAULT_NAMESPACE}")
-    print("\nEncryption schema created. Use generate_data.py to populate with data.")
+    print("\nEncryption schema created. Use 'python deploy.py generate' to populate with data.")
 
     setup_client.close()
 

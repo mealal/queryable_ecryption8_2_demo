@@ -19,14 +19,10 @@ import random
 from pathlib import Path
 import base64
 
-# Import encryption libraries
+# Import database libraries
 from pymongo import MongoClient
-from pymongo.encryption import ClientEncryption, Algorithm, AutoEncryptionOpts
-from pymongo.encryption_options import TextOpts, SubstringOpts, PrefixOpts
-from bson.binary import Binary
-from bson.codec_options import CodecOptions
+from pymongo.encryption_options import AutoEncryptionOpts
 import psycopg2
-from psycopg2.extras import execute_batch
 
 # ANSI color codes
 class Colors:
@@ -81,14 +77,6 @@ STATES = ["NY", "CA", "IL", "TX", "AZ", "PA", "TX", "CA", "TX", "CA"]
 
 TIERS = ["bronze", "silver", "gold", "platinum", "premium"]
 
-PRODUCTS = [
-    {"name": "Widget A", "price": 29.99},
-    {"name": "Gadget B", "price": 49.99},
-    {"name": "Tool C", "price": 89.99},
-    {"name": "Device D", "price": 129.99},
-    {"name": "Equipment E", "price": 199.99}
-]
-
 def generate_customer_data(count):
     """Generate random customer data"""
     customers = []
@@ -129,53 +117,6 @@ def generate_customer_data(count):
         customers.append(customer)
 
     return customers
-
-def generate_orders(customers):
-    """Generate orders for customers"""
-    orders = []
-
-    for customer in customers:
-        # Each customer gets 1-5 orders
-        num_orders = random.randint(1, 5)
-
-        for i in range(num_orders):
-            order_id = str(uuid.uuid4())
-            order_date = datetime.now() - timedelta(days=random.randint(1, 365))
-
-            # Each order has 1-3 items
-            items = []
-            total_amount = 0
-            for _ in range(random.randint(1, 3)):
-                product = random.choice(PRODUCTS)
-                quantity = random.randint(1, 3)
-                item_total = product["price"] * quantity
-                total_amount += item_total
-
-                items.append({
-                    "product": product["name"],
-                    "price": product["price"],
-                    "quantity": quantity
-                })
-
-            order = {
-                "id": order_id,
-                "customer_id": customer["id"],
-                "order_number": f"ORD-{random.randint(10000, 99999)}",
-                "order_date": order_date,
-                "total_amount": round(total_amount, 2),
-                "status": random.choice(["completed", "pending", "shipped"]),
-                "items": json.dumps(items),
-                "shipping_address": json.dumps({
-                    "street": customer["address"],
-                    "city": customer["city"],
-                    "state": customer["state"],
-                    "zip_code": customer["zip_code"]
-                })
-            }
-
-            orders.append(order)
-
-    return orders
 
 def build_mongodb_document(customer):
     """Build MongoDB document from customer data
@@ -439,101 +380,6 @@ def connect_alloydb():
     except Exception as e:
         print_error(f"AlloyDB connection failed: {e}")
         sys.exit(1)
-
-def insert_mongodb_data(db, key_ids, customers):
-    """Insert encrypted customer data into MongoDB using AUTOMATIC encryption"""
-    print_header("Inserting Data into MongoDB")
-
-    collection = db["customers"]
-
-    # Check existing count
-    existing_count = collection.count_documents({})
-    print_info(f"Collection currently has {existing_count} documents")
-
-    print_info(f"Inserting {len(customers)} additional customer records with AUTOMATIC encryption...")
-    print_info("Note: MongoDB driver will encrypt searchable fields automatically based on encryptedFields schema")
-
-    for i, customer in enumerate(customers):
-        # With AUTOMATIC encryption, we insert PLAINTEXT data
-        # The MongoDB driver will encrypt the fields defined in encryptedFields schema automatically
-        # This approach enables queryable encryption to work correctly
-
-        doc = build_mongodb_document(customer)
-        collection.insert_one(doc)
-        print_progress(i+1, len(customers), f"({i+1}/{len(customers)} customers)")
-
-    # Ensure all output is flushed
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-    print_info("Counting inserted documents...")
-    sys.stdout.flush()
-
-    # Count documents using the existing collection
-    final_count = collection.estimated_document_count()
-    print_success(f"MongoDB: {final_count} total customer records")
-
-def insert_alloydb_data(conn, customers):
-    """Insert customer data into AlloyDB (simplified - no orders or metadata tables)"""
-    print_header("Inserting Data into AlloyDB")
-
-    cursor = conn.cursor()
-
-    # Check existing count
-    cursor.execute("SELECT COUNT(*) FROM customers")
-    existing_count = cursor.fetchone()[0]
-    print_info(f"Table currently has {existing_count} customers")
-
-    # Insert customers with all fields
-    print_info(f"Inserting {len(customers)} additional customer records...")
-
-    customer_records = [
-        (
-            c["id"],
-            c["full_name"],
-            c["email"],
-            c["phone"],
-            build_alloydb_address_json(c),
-            c["preferences"],
-            c["tier"],
-            c["category"],
-            c["status"],
-            c["loyalty_points"],
-            c["last_purchase_date"],
-            c["lifetime_value"]
-        )
-        for c in customers
-    ]
-
-    # Insert in batches with progress
-    batch_size = 1000
-
-    for i in range(0, len(customer_records), batch_size):
-        batch = customer_records[i:i + batch_size]
-        execute_batch(
-            cursor,
-            """
-            INSERT INTO customers (id, full_name, email, phone, address, preferences, tier, category, status, loyalty_points, last_purchase_date, lifetime_value)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            batch
-        )
-        records_done = min(i + batch_size, len(customer_records))
-        print_progress(records_done, len(customer_records), f"({records_done}/{len(customer_records)} customers)")
-
-    print_success(f"AlloyDB: {len(customers)} customer records")
-
-    conn.commit()
-    cursor.close()
-
-    # Verify counts
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM customers")
-    customer_count = cursor.fetchone()[0]
-    cursor.close()
-
-    print_success(f"AlloyDB: {customer_count} total customers")
 
 def insert_batch_with_validation(mongo_db, alloydb_conn, batch, batch_num, total_batches, encryption_key, total_inserted=0, target_count=10000):
     """Insert a batch into both databases and validate consistency
