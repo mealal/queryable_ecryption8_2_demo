@@ -173,8 +173,17 @@ All search endpoints support `?mode=hybrid` (default) or `?mode=mongodb_only`:
 ## Prerequisites
 
 - **Docker Desktop** - For MongoDB and PostgreSQL containers
-- **Python 3.9+** - For the API and scripts
+- **Python 3.9+** - For deployment scripts and testing
 - **8GB RAM** - Minimum system memory
+
+### Install Python Dependencies
+
+```bash
+# Install required packages (only 'requests' needed for testing)
+pip install -r requirements.txt
+```
+
+**Note:** All heavy dependencies (pymongo, pymongocrypt, FastAPI) run inside Docker containers. The local environment only needs `requests` for the test script.
 
 ---
 
