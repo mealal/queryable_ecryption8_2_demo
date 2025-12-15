@@ -437,15 +437,25 @@ def setup_encryption():
     else:
         Path('.encryption_key').touch()
 
+    # Get the docker-compose project name (folder name) to determine network name
+    # The network name format is: {project_name}_poc_network
+    project_name = os.path.basename(os.getcwd()).lower().replace('-', '_').replace(' ', '_')
+    network_name = f"{project_name}_poc_network"
+
+    # Get the API image name (same pattern)
+    image_name = f"{project_name}-api"
+
+    print_info(f"Using network: {network_name}, image: {image_name}")
+
     result = run_command(
         f'docker run --rm '
-        f'--network poc1_poc_network '
+        f'--network {network_name} '
         f'-v "{cwd}/mongodb:/app/mongodb" '
         f'-v "{cwd}/.encryption_key:/app/.encryption_key" '
         f'-e MONGODB_URI=mongodb://mongodb:27017 '
         f'-e LOCAL_MASTER_KEY_FILE=/app/.encryption_key '
         f'-w /app '
-        f'poc1-api python mongodb/setup-encryption.py',
+        f'{image_name} python mongodb/setup-encryption.py',
         check=False,
         capture_output=True
     )
