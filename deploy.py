@@ -236,6 +236,18 @@ def start_containers():
     """Start Docker containers"""
     print_header("Starting Docker Containers")
 
+    # Ensure .encryption_key exists as a FILE before docker-compose
+    # Docker will create a directory if the file doesn't exist, causing errors
+    if os.path.exists('.encryption_key'):
+        if os.path.isdir('.encryption_key'):
+            import shutil
+            shutil.rmtree('.encryption_key')
+            Path('.encryption_key').touch()
+            print_info("Cleaned up .encryption_key directory, created as file")
+    else:
+        Path('.encryption_key').touch()
+        print_info("Created empty .encryption_key file")
+
     # Rebuild API container to ensure Dockerfile changes are applied
     # This is critical for multi-architecture support (x86_64 vs ARM64)
     print_info("Building API container (ensures latest Dockerfile changes)...")
@@ -243,9 +255,8 @@ def start_containers():
         print_error("Failed to build API container")
         return False
 
-    else:
-        print_info("Starting MongoDB, AlloyDB, and API containers...")
-        compose_cmd = "docker-compose up -d"
+    print_info("Starting MongoDB, AlloyDB, and API containers...")
+    compose_cmd = "docker-compose up -d"
 
     if not run_command(compose_cmd):
         print_error("Failed to start containers")
@@ -416,8 +427,14 @@ def setup_encryption():
     # We mount the necessary directories and set environment variables
     cwd = os.getcwd().replace('\\', '/')  # Convert Windows path for Docker
 
-    # Create empty .encryption_key file if it doesn't exist (Docker needs it for volume mount)
-    if not os.path.exists('.encryption_key'):
+    # Clean up and create .encryption_key file if needed
+    # Docker creates a directory if the source file doesn't exist, so we must ensure it's a file
+    if os.path.exists('.encryption_key'):
+        if os.path.isdir('.encryption_key'):
+            import shutil
+            shutil.rmtree('.encryption_key')
+            Path('.encryption_key').touch()
+    else:
         Path('.encryption_key').touch()
 
     result = run_command(
