@@ -19,7 +19,8 @@ KEY_VAULT_NAMESPACE = "encryption.__keyVault"
 
 # Local KMS configuration (for POC - use AWS KMS/Azure Key Vault in production)
 LOCAL_MASTER_KEY = os.getenv("LOCAL_MASTER_KEY")
-KEY_FILE_PATH = ".encryption_key"
+# Support both local and Docker paths
+KEY_FILE_PATH = os.getenv("LOCAL_MASTER_KEY_FILE", ".encryption_key")
 
 if not LOCAL_MASTER_KEY:
     # Generate a random 96-byte master key for local testing

@@ -51,7 +51,8 @@ services:
       - "8000:8000"
     volumes:
       - ./api:/app/api
-      - ./.encryption_key:/app/.encryption_key:ro
+      - ./mongodb:/app/mongodb
+      - ./.encryption_key:/app/.encryption_key
     environment:
       MONGODB_URI: mongodb://mongodb:27017
       ALLOYDB_URI: postgresql://postgres:postgres_password@alloydb:5432/alloydb_poc

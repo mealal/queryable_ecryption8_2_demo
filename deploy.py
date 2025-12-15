@@ -366,15 +366,16 @@ END
     print_success("Database users created")
 
 def setup_encryption():
-    """Setup MongoDB encryption schema (no data generation)"""
+    """Setup MongoDB encryption schema (no data generation)
+
+    Runs setup-encryption.py inside the Docker container to avoid
+    requiring local pymongo installation.
+    """
     print_header("Setting Up MongoDB Encryption Schema")
 
     # Clean up .encryption_key if it's a directory
     if cleanup_encryption_key_directory():
         print_warning(".encryption_key was a directory, removed")
-    elif os.path.exists('.encryption_key') and os.path.isfile('.encryption_key'):
-        # File exists, check if we need to recreate
-        pass
 
     # Check if encryption keys exist in MongoDB
     print_info("Checking encryption key vault...")
@@ -408,9 +409,32 @@ def setup_encryption():
             else:
                 os.remove('.encryption_key')  # Remove file
 
-    print_info("Running encryption setup script (schema only, no data)...")
+    print_info("Running encryption setup script inside Docker container...")
 
-    if run_command(f"{sys.executable} mongodb/setup-encryption.py"):
+    # Run setup-encryption.py using docker run with the API image
+    # This avoids issues with the API container crashing on startup without keys
+    # We mount the necessary directories and set environment variables
+    cwd = os.getcwd().replace('\\', '/')  # Convert Windows path for Docker
+
+    # Create empty .encryption_key file if it doesn't exist (Docker needs it for volume mount)
+    if not os.path.exists('.encryption_key'):
+        Path('.encryption_key').touch()
+
+    result = run_command(
+        f'docker run --rm '
+        f'--network poc1_poc_network '
+        f'-v "{cwd}/mongodb:/app/mongodb" '
+        f'-v "{cwd}/.encryption_key:/app/.encryption_key" '
+        f'-e MONGODB_URI=mongodb://mongodb:27017 '
+        f'-e LOCAL_MASTER_KEY_FILE=/app/.encryption_key '
+        f'-w /app '
+        f'poc1-api python mongodb/setup-encryption.py',
+        check=False,
+        capture_output=True
+    )
+
+    if result:
+        print(result)  # Show output from setup script
         print_success("Encryption schema configured")
         return True
     else:
@@ -664,7 +688,8 @@ def deploy_all():
     # Create users (idempotent - will skip if already exist)
     create_database_users()
 
-    # Setup encryption schema (always call - function is idempotent and checks MongoDB key vault)
+    # Setup encryption schema (runs in a temporary container using the API image)
+    # This must happen BEFORE AlloyDB schema and API startup since the API needs encryption keys
     if not setup_encryption():
         print_error("Deployment failed at encryption setup")
         sys.exit(1)
@@ -674,28 +699,27 @@ def deploy_all():
         print_error("Deployment failed at AlloyDB schema setup")
         sys.exit(1)
 
-    # Recreate API container to remount encryption key file
-    if not state['api_running']:
-        print_info("Starting API container...")
-        run_command("docker rm -f poc_api", check=False)
-        run_command("docker-compose up -d api", check=False)
-        time.sleep(3)
+    # Now start/restart API container with the encryption key available
+    print_info("Starting API container with encryption key...")
+    run_command("docker rm -f poc_api", check=False)
+    run_command("docker-compose up -d api", check=False)
+    time.sleep(3)
 
-        # Wait for API container to be ready
-        print_info("Waiting for API to start...")
-        max_wait = 30
-        api_ready = False
-        for i in range(max_wait):
-            time.sleep(2)
-            result = run_command("curl -s http://localhost:8000/health", check=False, capture_output=True)
-            if result and "healthy" in result:
-                print_success("API is ready")
-                api_ready = True
-                break
-            print(f"  Waiting... ({i+1}/{max_wait})")
+    # Wait for API to be healthy
+    print_info("Waiting for API to be ready...")
+    max_wait = 30
+    api_ready = False
+    for i in range(max_wait):
+        time.sleep(2)
+        result = run_command("curl -s http://localhost:8000/health", check=False, capture_output=True)
+        if result and "healthy" in result:
+            print_success("API is ready")
+            api_ready = True
+            break
+        print(f"  Waiting... ({i+1}/{max_wait})")
 
-        if not api_ready:
-            print_warning("API health check timed out, but continuing...")
+    if not api_ready:
+        print_warning("API health check timed out, but continuing...")
 
     # Data generation is now manual - users should run: python deploy.py generate --count 10000
     print_info("Note: Data generation is manual. Run 'python deploy.py generate --count 10000' to populate databases")
